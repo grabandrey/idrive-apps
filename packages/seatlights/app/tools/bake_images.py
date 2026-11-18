@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DESIGN = os.path.join(HERE, "..", "..", "design")
 OUT = os.path.join(HERE, "..", "src", "seat_images.js")
 CROP = (90, 0, 820, 780)        # x0, y0, x1, y1 in the source pictures
-ALIGN = (1, 2)                  # the ON picture moved right, down (px) onto the OFF one
+ALIGN = (1, 1)                  # the ON picture moved right, down (px) onto the OFF one
 FADE_FROM = 0.74                # the bottom from here (of the crop's height) fades out
 
 
