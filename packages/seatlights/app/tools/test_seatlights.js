@@ -225,7 +225,32 @@ ok(on.targets.length === 1 && on.targets[0].key === 'slSwitch', 'the switch is t
 const t0 = on.targets[0];
 ok(ui.hit(on.targets, t0.x + t0.w / 2, t0.y + t0.h / 2).key === 'slSwitch' && ui.hit(on.targets, 10, 10) === null, 'hit');
 ok(t0.x >= 0 && t0.y >= 0 && t0.x + t0.w <= ui.W && t0.y + t0.h <= ui.H && on.rec.n > 50, 'drawn on screen');
-ok(ui.draw(new ui.Recorder(), { on: false, holding: false, note: 'Off', output: 45, layout: null }).rec.n > 50, 'off draws too');
+const offDrawn = ui.draw(new ui.Recorder(), { on: false, holding: false, note: 'Off', output: 45, layout: null });
+ok(offDrawn.rec.n > 50 && offDrawn.rec.images.join() === String(ui.PIC.off) && on.rec.images.join() === String(ui.PIC.on), 'the OFF picture off, the ON picture held');
+ok(ui.draw(new ui.Recorder(), { on: true, holding: false, bypassed: true, note: 'x', output: 45, layout: 1 }).rec.images.join() === String(ui.PIC.off), 'ON but not held (locked): the OFF picture');
+// the picture op: 18, x y w h r as floats, the id; drawn with its proportions
+const words = on.rec.words(), fl = new Float32Array(words.buffer, words.byteOffset, words.length);
+const at = Array.prototype.indexOf.call(words, 18);
+ok(at > 0 && words[at + 6] === ui.PIC.on && Math.abs(fl[at + 3] / fl[at + 4] - ui.PIC.w / ui.PIC.h) < 0.002 && fl[at + 4] === ui.H, 'picture op: full height, proportions kept');
+// the baked pictures: as big as ui.js says, premultiplied (no colour above its alpha)
+const zlib = require('zlib');
+const pics = require('../src/seat_images.js');
+['off', 'on'].forEach((k) => {
+    const px = zlib.inflateSync(Buffer.from(pics[k], 'base64'));
+    ok(pics.w === ui.PIC.w && pics.h === ui.PIC.h && px.length === pics.w * pics.h * 4 && pics.w <= 1024 && pics.h <= 1024, k + ' picture: ' + pics.w + ' x ' + pics.h + ' RGBA, within the renderer\'s 1024');
+    let bad = 0;
+    for (let i = 0; i < px.length; i += 4) if (px[i] > px[i + 3] || px[i + 1] > px[i + 3] || px[i + 2] > px[i + 3]) bad++;
+    ok(bad === 0, k + ' picture premultiplied');
+    ok(px[3] === 0 && px[px.length - 1] === 0, k + ' picture: transparent around the seat, faded at the bottom');
+});
+/* the renderer client: a picture goes up once, before the first frame that draws it */
+const { Gpu } = require('../src/gpu.js');
+const g = new Gpu('t', log, []);
+const sent = [];
+g.ready = true; g.placement = { x: 0, y: 0, w: 1, h: 1, scale: 1 }; g._write = (b) => { sent.push(b.readUInt32LE(0)); return true; };
+g.picture(ui.PIC.on, 2, 1, Buffer.alloc(8));
+g.frame(on.rec); g.frame(on.rec);
+ok(sent.filter((t) => t === 10).length === 1 && sent.indexOf(10) < sent.indexOf(7), 'picture uploaded once, before its frame');
 
 /* ---- the package's car-side rules ---- */
 const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'mgu-app.json'), 'utf8'));
@@ -234,7 +259,7 @@ app.modules.forEach((m) => {
     const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
     ok(!/\?\.|\?\?|Object\.fromEntries|recursive:\s*true|\basync\s|\bawait\s|\.\.\.[a-zA-Z]/.test(code), m + ': Node 8 only');
     (src.match(/require\('([^']+)'\)/g) || []).map((r) => r.slice(9, -2)).forEach((r) => {
-        ok(r[0] === '.' || app.sdk.indexOf(r) >= 0 || ['events', 'fs', 'path', 'os', 'net'].indexOf(r) >= 0, m + ': may require ' + r);
+        ok(r[0] === '.' || app.sdk.indexOf(r) >= 0 || ['events', 'fs', 'path', 'os', 'net', 'zlib'].indexOf(r) >= 0, m + ': may require ' + r);
     });
     if (m !== 'src/uds.js') ok(code.indexOf('serviceID') < 0 && code.indexOf('_request(') < 0, m + ': requests only through uds.js');
 });

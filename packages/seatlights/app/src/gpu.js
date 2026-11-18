@@ -11,6 +11,8 @@
  *   gpu.on('touch', (phase, x, y) => ...);       // 1 down, 2 move, 3 up; logical px
  *   gpu.on('closed', () => ...);                  // a touch outside our rects: the renderer hid us
  *   gpu.connect(); gpu.show(true); gpu.frame(recorder);
+ *   gpu.picture(id, w, h, premultipliedRgba)    a colour picture, uploaded (IMAGE, 10: id, w, h, then the pixels) the
+ *                                               first time a frame draws it (the recorder's op 18 lists it in rec.images)
  *
  * Messages: [type u32][length u32][payload, padded to 4 bytes], little endian.
  */
@@ -19,7 +21,7 @@ const fs = require('fs');
 const EventEmitter = require('events');
 
 const SOCKETS = ['/run/mgu-render/render.sock', '/run/mgu-renderd/renderd.sock'];
-const M = { HELLO: 1, PLACE: 2, SHOW: 3, ATLAS: 4, FRAME: 7, CLAIM: 9 };
+const M = { HELLO: 1, PLACE: 2, SHOW: 3, ATLAS: 4, FRAME: 7, CLAIM: 9, IMAGE: 10 };
 const E = { READY: 101, TICK: 102, ERROR: 103, TOUCH: 105, CLOSED: 106 };
 const X = { MODE: 0x4d520001, READY: 0x4d520101, STATE: 0x4d520102 };
 const X_MODE_LAYER = 1;
@@ -51,6 +53,8 @@ class Gpu extends EventEmitter {
         this.visible = false;
         this.claimed = null;
         this.sentAtlas = new Set();
+        this.pictures = new Map();  // id -> { w, h, data }: pictures a frame may draw
+        this.sentPictures = new Set();
         this.waiting = false;       // a frame is out, its tick not back yet
         this.sentAt = 0;
         this.inbuf = Buffer.alloc(0);
@@ -71,6 +75,7 @@ class Gpu extends EventEmitter {
         s.on('connect', () => {
             this.inbuf = Buffer.alloc(0);
             this.sentAtlas.clear();
+            this.sentPictures.clear();
             this.claimed = null;
             this.native = false;
             this.waiting = false;
@@ -141,7 +146,7 @@ class Gpu extends EventEmitter {
     place(pl) {
         const same = this.placement && ['x', 'y', 'w', 'h', 'scale', 'ox', 'oy'].every((k) => pl[k] === this.placement[k]);
         if (same) return;
-        if (this.placement && (pl.w !== this.placement.w || pl.h !== this.placement.h)) this.sentAtlas.clear();
+        if (this.placement && (pl.w !== this.placement.w || pl.h !== this.placement.h)) { this.sentAtlas.clear(); this.sentPictures.clear(); }
         this.placement = Object.assign({}, pl);
         if (this.ready) this._sendPlace();
     }
@@ -168,7 +173,13 @@ class Gpu extends EventEmitter {
         this._write(msg(M.CLAIM, b));
         this.claimed = key;
     }
-    /** a recording (ui.js Recorder): its glyph atlases go first, once per connection */
+    /** a colour picture (premultiplied RGBA, rows top-down, at most 1024 a side) a frame may draw by its id */
+    picture(id, w, h, data) {
+        this.pictures.set(id, { w: w, h: h, data: data });
+        this.sentPictures.delete(id);
+    }
+
+    /** a recording (ui.js Recorder): its glyph atlases and pictures go first, once per connection */
     frame(rec) {
         if (!this.ready || !this.placement) return false;
         rec.atlases.forEach((a) => {
@@ -177,6 +188,14 @@ class Gpu extends EventEmitter {
             head.writeUInt32LE(a.id, 0); head.writeUInt32LE(a.w, 4); head.writeUInt32LE(a.h, 8);
             this._write(msg(M.ATLAS, Buffer.concat([head, a.alpha])));
             this.sentAtlas.add(a.id);
+        });
+        (rec.images || []).forEach((id) => {
+            const p = this.pictures.get(id);
+            if (!p || this.sentPictures.has(id)) return;
+            const head = Buffer.alloc(12);
+            head.writeUInt32LE(id, 0); head.writeUInt32LE(p.w, 4); head.writeUInt32LE(p.h, 8);
+            this._write(msg(M.IMAGE, Buffer.concat([head, p.data])));
+            this.sentPictures.add(id);
         });
         const w = rec.words();
         this.waiting = true;

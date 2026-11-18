@@ -4,13 +4,15 @@
  * records a frame (renderd draw ops) and returns what a tap or the controller can press. The recorder and glyph
  * atlases are Light Logger's (packages/lightlog/app/src/ui.js). Tested and previewed on a desktop.
  *
- *   Seat Lights
- *          +-----------------------------------------------------------+
- *          |   ( the headrest badge )    SEAT LIGHTS                    |
- *          |                             ON            [====( )]       |
- *          |                             On                            |
- *          +-----------------------------------------------------------+
- *                    lamp output 45 · held through the body controller
+ *   Seat Lights      (           )          SEAT LIGHTS
+ *                    (  the seat ) <- the     ON                                  [====( )]
+ *                    (  its top  )    picture  The logos are held on
+ *                    (           )             Keeps the headrest logos lit ...
+ *                                                        lamp output 45 · layout 2 · ...
+ *
+ * The picture is the user's own render of the seat (design/seat_off.png, seat_on.png, baked by tools/bake_images.py):
+ * the OFF one, or the ON one with the logo lit, swapped with the switch. The renderer draws it (op 18, IMAGE) from
+ * a picture uploaded once (gpu.js picture()).
  *
  * The switch has the key of the HMI list's row under the drawn screen (slSwitch), so the controller's focus there
  * lights it here.
@@ -18,7 +20,8 @@
 const FONT = require('./ui_font.js');
 
 const W = 2880, H = 764;
-const OP = { CLEAR: 1, RECT: 2, RRECT: 4, RSTROKE: 5, GLYPHS: 11, QUAD: 15 };
+const OP = { CLEAR: 1, RECT: 2, RRECT: 4, RSTROKE: 5, GLYPHS: 11, QUAD: 15, IMAGE: 18 };
+const PIC = { off: 0x534c0001, on: 0x534c0002, w: 730, h: 780 };      // the pictures' ids and size (seat_images.js)
 
 
 function pack(c) { return (((c[0] & 255) << 24) | ((c[1] & 255) << 16) | ((c[2] & 255) << 8) | (c[3] & 255)) >>> 0; }
@@ -57,8 +60,16 @@ function atlas(style) {
 
 /* ---- a frame's draw ops ---- */
 class Recorder {
-    constructor() { this.u = new Uint32Array(16384); this.f = new Float32Array(this.u.buffer); this.n = 0; this.atlases = []; }
-    reset() { this.n = 0; this.atlases = []; return this; }
+    constructor() { this.u = new Uint32Array(16384); this.f = new Float32Array(this.u.buffer); this.n = 0; this.atlases = []; this.images = []; }
+    reset() { this.n = 0; this.atlases = []; this.images = []; return this; }
+    /* an uploaded picture over x, y, w, h, corner radius r (op 18: x y w h r as floats, then the id) */
+    image(id, x, y, w, h, r) {
+        this._grow(7); const i = this.n, f = this.f;
+        this.u[i] = OP.IMAGE; f[i + 1] = x; f[i + 2] = y; f[i + 3] = w; f[i + 4] = h; f[i + 5] = r || 0; this.u[i + 6] = id >>> 0;
+        this.n += 7;
+        if (this.images.indexOf(id) < 0) this.images.push(id);
+        return this;
+    }
     words() { return this.u.subarray(0, this.n); }
     _grow(k) {
         if (this.n + k <= this.u.length) return;
@@ -143,75 +154,6 @@ function fit(rec, style, s, maxW) {
     return s.slice(0, lo) + '...';
 }
 
-/* the headrest's badge, as on the G87 M2: dark leather with a curved stitched seam, a chrome-rimmed glass window,
- * the three stripes and the model's name in slanted strokes; lit, the lettering glows. Drawn with rrects and quads. */
-const STRIPES = [[43, 162, 224], [36, 62, 148], [226, 34, 40]];
-function shade(c, k, a) { return [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k), a === undefined ? 255 : a]; }
-
-function badge(rec, cx, cy, lit) {
-    // the leather: the headrest's face, a lighter top, the seam below the badge (dashes along a curve)
-    const LW = 600, LH = 470, lx = cx - LW / 2, ly = cy - LH / 2;
-    rec.rrect(lx, ly, LW, LH, 70, [22, 23, 26, 255]);
-    rec.rrect(lx + 18, ly + 14, LW - 36, LH * 0.42, 60, [30, 31, 35, 255]);
-    rec.rrect(lx + LW - 54, ly + 50, 30, LH - 100, 15, [19, 20, 23, 255]);            // the headrest's edge, right
-    rec.rrect(lx + 24, ly + 50, 26, LH - 100, 13, [25, 26, 30, 255]);                 // and left
-    const seam = (y0, dy, col) => {
-        for (let i = 0; i < 26; i++) {
-            const t0 = i / 26, t1 = (i + 0.55) / 26;
-            const p = (t) => [lx + 70 + t * (LW - 140), y0 + dy * Math.sin(Math.PI * t)];
-            const a = p(t0), b = p(t1);
-            rec.quad([[a[0], a[1] - 1.5], [b[0], b[1] - 1.5], [b[0], b[1] + 1.5], [a[0], a[1] + 1.5]], col);
-        }
-    };
-    seam(cy + 150, 40, [92, 95, 102, 255]);
-    seam(cy + 172, 40, [60, 62, 68, 255]);
-    rec.quad([[lx + 60, cy + 196], [lx + LW - 60, cy + 196], [lx + LW - 60, cy + 200], [lx + 60, cy + 200]], [12, 13, 15, 255]);
-
-    // the badge: chrome rim (dark edge, bright face, inner shadow), the glass
-    const BW = 440, BH = 180, bx = cx - BW / 2, by = cy - BH / 2 - 30;
-    rec.rrect(bx - 6, by - 6, BW + 12, BH + 12, 52, [70, 72, 78, 255]);
-    rec.rrect(bx, by, BW, BH, 46, [196, 199, 205, 255]);
-    rec.rrect(bx + 4, by + 3, BW - 8, BH * 0.45, 42, [226, 229, 234, 255]);         // the rim's highlight, top
-    rec.rrect(bx + 12, by + 12, BW - 24, BH - 24, 36, [110, 113, 120, 255]);
-    const gx = bx + 16, gy = by + 16, gw = BW - 32, gh = BH - 32;
-    rec.rrect(gx, gy, gw, gh, 32, lit ? [26, 28, 34, 255] : [14, 15, 18, 255]);
-    rec.rrect(gx + 14, gy + 6, gw - 28, gh * 0.3, 22, [255, 255, 255, lit ? 9 : 5]);  // the glass's sheen
-
-    // the lettering, slanted forward: three stripes, then M and 2 in strokes
-    const H = 70, base = gy + gh / 2 + H / 2, slant = 0.27;
-    const P = (x, y) => [x + (base - y) * slant, y];
-    const Q = (pts, c) => rec.quad(pts.map((p) => P(p[0], p[1])), c);
-    const x0 = gx + 70, top = base - H;
-    const glyphs = [];                               // the M2 strokes, in local coordinates, for the glow too
-    const st = 15;                                   // stroke width
-    const mx = x0 + 112, mw = 92;
-    glyphs.push([[mx, base], [mx + st, base], [mx + st, top], [mx, top]]);                                  // M: left stem
-    glyphs.push([[mx + mw - st, base], [mx + mw, base], [mx + mw, top], [mx + mw - st, top]]);                // right stem
-    glyphs.push([[mx, top], [mx + st + 2, top], [mx + mw / 2 + st / 2, base - H * 0.38], [mx + mw / 2 - st / 2, base - H * 0.38]]);
-    glyphs.push([[mx + mw - st - 2, top], [mx + mw, top], [mx + mw / 2 + st / 2, base - H * 0.38], [mx + mw / 2 - st / 2, base - H * 0.38]]);
-    const tx = mx + mw + 26, tw = 70;
-    glyphs.push([[tx + 4, top], [tx + tw - 10, top], [tx + tw - 10, top + st], [tx + 4, top + st]]);         // 2: the top
-    glyphs.push([[tx + tw - 10, top], [tx + tw, top + 10], [tx + tw, base - H * 0.5], [tx + tw - st, base - H * 0.5]]);   // the right
-    glyphs.push([[tx + tw - st, base - H * 0.5 - 6], [tx + tw, base - H * 0.5], [tx + st, base - st + 2], [tx, base - st]]);  // the diagonal
-    glyphs.push([[tx, base - st], [tx + tw, base - st], [tx + tw, base], [tx, base]]);                      // the bottom
-    glyphs.push([[tx, top + st], [tx + st, top + st], [tx + st, top + 26], [tx, top + 26]]);                 // the top's turn-down
-
-    if (lit) {
-        // the glow: a halo traced around each stroke (the stroke repeated, shifted all around, fainter further out)
-        [[14, 6], [10, 9], [6.5, 16], [3.5, 30], [1.8, 55]].forEach((ring) => {
-            const d = ring[0];
-            [[d, 0], [-d, 0], [0, d], [0, -d], [d * 0.7, d * 0.7], [-d * 0.7, d * 0.7], [d * 0.7, -d * 0.7], [-d * 0.7, -d * 0.7]].forEach((o) => {
-                glyphs.forEach((q) => Q(q.map((pt) => [pt[0] + o[0], pt[1] + o[1]]), [225, 235, 255, ring[1]]));
-            });
-        });
-    }
-    STRIPES.forEach((c, i) => {
-        const sx = x0 + i * 30;
-        Q([[sx, base - 6], [sx + 22, base - 6], [sx + 22, top + 14], [sx, top + 14]], lit ? c.concat(255) : shade(c, 0.32));
-    });
-    glyphs.forEach((q) => Q(q, lit ? [248, 250, 253, 255] : [64, 67, 74, 255]));
-}
-
 /*
  * model: { on (the switch), holding (the BDC took it), bypassed (locked, engine off), note, warn, output, layout, focus, pressed }
  * Returns { rec, targets: [{ key, x, y, w, h }] }.
@@ -222,19 +164,26 @@ function draw(rec, m) {
     rec.clear(C.bg);
     rec.text('title', 'Seat Lights', 90, 86, C.text);
 
-    const K = { x: 520, y: 130, w: 1840, h: 520 };
-    rec.rrect(K.x, K.y, K.w, K.h, 36, C.card);
-    badge(rec, K.x + 330, K.y + K.h / 2 + 10, !!m.holding);
+    // the seat: its top, the full height, proportions kept; lit, a faint light behind the headrest
+    const ph = H, pw = Math.round(PIC.w * ph / PIC.h), px = 400, py = 0;
+    if (m.holding) {
+        const cx = px + pw * 0.42, cy = py + ph * 0.42;
+        for (let i = 0; i < 24; i++) {
+            const rx = 540 - i * 17, ry = 400 - i * 12;
+            rec.rrect(cx - rx, cy - ry, rx * 2, ry * 2, ry, [150, 180, 255, 2]);
+        }
+    }
+    rec.image(m.holding ? PIC.on : PIC.off, px, py, pw, ph, 0);
 
-    const tx = K.x + 720;
-    rec.text('head', 'SEAT LIGHTS', tx, K.y + 120, C.faint, 'left', 4);
-    rec.text('title', !m.on ? 'OFF' : m.holding ? 'ON' : m.bypassed ? 'ON  ·  LOCKED' : 'ON ...', tx, K.y + 230, m.on ? C.text : C.dim);
+    // the right: what it does, the switch
+    const tx = 1400;
+    rec.text('head', 'SEAT LIGHTS', tx, 220, C.faint, 'left', 6);
+    rec.text('title', !m.on ? 'OFF' : m.holding ? 'ON' : m.bypassed ? 'ON  ·  LOCKED' : 'ON ...', tx, 320, m.on ? C.text : C.dim);
     const note = m.note === 'On' || m.note === 'Off' ? (m.holding ? 'The logos are held on' : '') : m.note || '';
-    rec.text('body', fit(rec, 'body', note, 1000), tx, K.y + 330, m.warn ? C.orange : m.holding ? C.green : C.dim);
-    rec.text('small', 'Keeps the headrest logos lit until you switch it off. Off while the car is locked.', tx, K.y + 400, C.faint);
+    rec.text('body', fit(rec, 'body', note, 1000), tx, 410, m.warn ? C.orange : m.holding ? C.green : C.dim);
+    rec.text('small', 'Keeps the headrest logos lit until you switch it off. Off while the car is locked.', tx, 470, C.faint);
 
-    // the switch
-    const sw = 300, sh = 140, sx = K.x + K.w - 90 - sw, sy = K.y + 110, r = sh / 2;
+    const sw = 300, sh = 140, sx = W - 120 - sw, sy = 210, r = sh / 2;
     const onC = m.holding ? C.green : m.on ? C.orange : C.track;
     rec.rrect(sx, sy, sw, sh, r, onC);
     const kx = m.on ? sx + sw - r : sx + r;
@@ -243,9 +192,10 @@ function draw(rec, m) {
     if (m.focus === 'slSwitch') rec.stroke(sx - 10, sy - 10, sw + 20, sh + 20, r + 10, 5, C.accent);
     targets.push({ key: 'slSwitch', x: sx - 20, y: sy - 20, w: sw + 40, h: sh + 40 });
 
+    rec.rect(tx, 560, W - 120 - tx, 2, C.line);
     const info = 'Lamp output ' + (m.output || 45) + (m.layout !== null && m.layout !== undefined ? '  ·  layout ' + (m.layout + 1) : '  ·  layout found the first time it goes on')
         + '  ·  held through the body controller';
-    rec.text('small', info, W / 2, K.y + K.h + 70, C.faint, 'center');
+    rec.text('small', info, tx, 620, C.faint);
     return { rec: rec, targets: targets };
 }
 
@@ -265,4 +215,4 @@ function placement(area) {
         ox: Math.round((area.w - W * scale) / 2), oy: Math.round((area.h - H * scale) / 2) };
 }
 
-module.exports = { W, H, OP, Recorder, draw, hit, placement, atlas, pack, fit };
+module.exports = { W, H, OP, PIC, Recorder, draw, hit, placement, atlas, pack, fit };

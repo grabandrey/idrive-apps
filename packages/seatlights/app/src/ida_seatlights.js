@@ -10,6 +10,7 @@
  * Built on the head unit by MGU Store against the car's own oap-sdk (mgu-app.json).
  */
 const os = require('os');
+const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
 const OnlineApp = require('oap-sdk/src/core/OnlineApp.js');
@@ -289,6 +290,12 @@ class SeatLightsApp extends OnlineApp {
         if (this._gpu) return;
         const gpu = new Gpu('ida_seatlights', logger);
         this._gpu = gpu;
+        // the seat pictures (seat_images.js: premultiplied RGBA, deflated), uploaded the first time a frame draws one
+        try {
+            const pics = require('./seat_images.js');
+            gpu.picture(ui.PIC.off, pics.w, pics.h, zlib.inflateSync(Buffer.from(pics.off, 'base64')));
+            gpu.picture(ui.PIC.on, pics.w, pics.h, zlib.inflateSync(Buffer.from(pics.on, 'base64')));
+        } catch (e) { logger.warn('seat pictures: ' + e.message); }
         gpu.on('ready', (scr, area) => {
             const a = area && area.w >= 1000 && area.h >= 400 ? area
                 : scr.w === 2880 ? ID8_AREA : { x: 0, y: 0, w: scr.w, h: scr.h };
