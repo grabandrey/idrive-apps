@@ -116,10 +116,10 @@
             var x = left ? c.x - T.hw - TT.gap : c.x + T.hw + TT.gap, al = left ? 'right' : 'left';
             var t = tyresOk && d.tyreT ? d.tyreT[c.key] : null;
             var p = tyresOk && d.tyreP ? d.tyreP[c.key] : null;
-            field('tyre.' + c.key + '.t', 'V', 'value', x, c.y + (s.pressures ? TT.dyT : 14), al, fmtTemp(t, tu), 0,
-                unit('unit', '°' + tu, 4));
-            field('tyre.' + c.key + '.p', 'V', 'unit', x, c.y + TT.dyP, al, s.pressures ? fmtPress(p, pu) : '', 0,
-                unit('label', pu, 5));
+            field('tyre.' + c.key + '.t', 'V', 'tyre', x, c.y + (s.pressures ? TT.dyT : 18), al, fmtTemp(t, tu), 0,
+                unit('tyreUnit', '°' + tu, 4));
+            field('tyre.' + c.key + '.p', 'V', 'tyreP', x, c.y + TT.dyP, al, s.pressures ? fmtPress(p, pu) : '', 0,
+                unit('tyreUnit', pu, 6));
         });
         return { uniforms: u, fields: f, demo: !!s.demo, engineOk: engineOk, gearboxOk: gearboxOk, tyresOk: tyresOk };
     }
