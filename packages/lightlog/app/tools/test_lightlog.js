@@ -103,12 +103,15 @@ const A = { element: 44 };
 uds.checkControl(0x40, 0x10, [0x03], A); uds.checkControl(0x40, 0x10, [0x01], A); uds.checkControl(0x40, 0x3e, [0x00], A); n += 3;
 uds.checkControl(0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x01], A); uds.checkControl(0x40, 0x2f, [0xe3, 0xb5, 0x00, 0x2c, 0x00], A); n += 2;
 uds.checkControl(0x40, 0x2f, [0x45, 0x01, 0x03, 0x2c, 0x01], A); n++;
+uds.FORMATS.forEach((f) => { uds.checkControl(0x40, 0x2f, [0xe3, 0xb5].concat(f.on(44)), A); uds.checkControl(0x40, 0x2f, [0xe3, 0xb5].concat(f.back(44)), A); n += 2; });
 [
     [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2d, 0x01], A, 'another output'],
     [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x02], A, 'another state'],
     [0x40, 0x2f, [0xe3, 0xb5, 0x00, 0x2c, 0x01], A, 'back to the car, but on'],
     [0x40, 0x2f, [0xe3, 0xb4, 0x03, 0x2c, 0x01], A, 'another identifier'],
-    [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x01, 0x00], A, 'longer'],
+    [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x01, 0x00, 0x00], A, 'longer than any layout'],
+    [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x00, 0x2d, 0x01], A, 'another output, 2-byte layout'],
+    [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x01, 0x01], A, 'a trailing byte that isn\'t 00'],
     [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x01], null, 'no output allowed'],
     [0x41, 0x10, [0x03], A, 'another unit'],
     [0x40, 0x10, [0x02], A, 'programming session'],
@@ -225,65 +228,94 @@ ok(screen.lines('all', jl).some((x) => /BDC lamp output 3: on \(32\)/.test(x)), 
 
 /* ---- keep on, against a fake body controller ---- */
 const { Keeper } = require('../src/keeper.js');
-function fakeBdc() {
-    const b = { session: 1, held: null, log: [], refuse: null, dropSession: false };
+/* a BDC_G05 whose lamp output control takes one record layout (layout: the record after the DID, as uds.FORMATS
+ * builds it) and answers 13 to any other length; 62 E3B9 <spare> <one byte per output>, 50 outputs; output 45 is
+ * element 44. sideEffect: a taken layout also switches on output 3 (a wrong reading of the record) */
+function fakeBdc(layoutIndex, sideEffect) {
+    const b = { session: 1, held: null, log: [], refuse: null, dropSession: false, other: false };
+    const want = uds.FORMATS[layoutIndex];
+    b.status = () => {
+        const out = [0x62, 0xe3, 0xb9];
+        for (let i = 0; i < 50; i++) out.push(i === 44 && b.held === 44 ? 1 : i === 2 && b.other ? 1 : 0);
+        return out;
+    };
     b.answer = (req) => {
         const d = Array.from(Buffer.from(req.udsData)), sid = req.serviceID;
         b.log.push([sid].concat(d).map((x) => (x < 16 ? '0' : '') + x.toString(16).toUpperCase()).join(' '));
-        const out = (uds) => [{ ecu: 0x40, uds: uds }];
+        const out = (u) => [{ ecu: 0x40, uds: u }];
+        if (sid === 0x22) return out(b.status());
         if (b.refuse && b.refuse.sid === sid) return out([0x7f, sid, b.refuse.nrc]);
-        if (sid === 0x10) { b.session = d[0]; if (d[0] === 1) b.held = null; return out([0x50, d[0], 0, 0x32, 1, 0xf4]); }
+        if (sid === 0x10) { b.session = d[0]; if (d[0] === 1) { b.held = null; b.other = false; } return out([0x50, d[0], 0, 0x32, 1, 0xf4]); }
         if (sid === 0x3e) return b.dropSession || b.session !== 3 ? out([0x7f, 0x3e, 0x7f]) : out([0x7e, 0x00]);
         if (sid === 0x2f) {
             if (b.session !== 3) return out([0x7f, 0x2f, 0x7f]);
-            b.held = d[2] === 3 ? d[3] : null;
-            return out([0x6f, d[0], d[1], d[2], d[3]]);
+            const rest = d.slice(2);
+            if (rest.length !== want.on(44).length) return out([0x7f, 0x2f, 0x13]);
+            const on = rest.join() === want.on(44).join(), back = rest.join() === want.back(44).join();
+            if (!on && !back) return out([0x7f, 0x2f, 0x31]);
+            b.held = on ? 44 : null;
+            if (on && sideEffect) b.other = true;
+            if (back) b.other = false;
+            return out([0x6f, d[0], d[1]].concat(rest.slice(0, 2)));
         }
         return out([0x7f, sid, 0x11]);
     };
     return b;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-tests.push(() => {
-    const bdc = fakeBdc();
+function keeperFor(bdc, opts) {
     const u = new uds.Uds(fakeLink(bdc.answer), log);
-    let clock = 1e6;
-    const k = new Keeper({ uds: u, log, now: () => clock, keepaliveMs: 15, testMs: 60, graceMs: 1000 });
-    const notes = []; k.on('note', (x) => notes.push(x));
-    return u.init().then(() => {
-        ok(!k.state.ready && k.test() && /Pin the logos/.test(notes.pop()), 'keep: nothing without a pinned output');
+    const k = new Keeper(Object.assign({ uds: u, log, keepaliveMs: 15, testMs: 60, graceMs: 1000, settleMs: 5,
+        readStatus: () => u.read(0x40, [0xe3, 0xb9], 200) }, opts || {}));
+    return u.init().then(() => ({ u: u, k: k }));
+}
+tests.push(() => {
+    // the G87: layout 2 (a 2-byte element); the kit's layout answered 13
+    const bdc = fakeBdc(1);
+    let clock = 1e6, k, u, saved;
+    const notes = [];
+    return keeperFor(bdc, { now: () => clock }).then((x) => {
+        k = x.k; u = x.u;
+        k.on('note', (t) => notes.push(t)); k.on('format', (f) => { saved = f; });
+        ok(!k.state.ready && /Pin the logos/.test((k.test(), notes.pop())), 'keep: nothing without a pinned output');
         k.target({ output: 45, statusDid: [0xe3, 0xb9] });
-        ok(k.state.ready && k.element === 44 && k.ctl.join() === '227,181', 'keep: output 45 = element 44 (0x2C), E3B9 -> E3B5');
+        ok(k.state.ready && k.element === 44 && k.ctl.join() === '227,181' && k.format === null, 'keep: output 45 = element 44, E3B9 -> E3B5, no layout yet');
         return u.control(0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2d, 0x01]).then(() => ok(false, 'never'), () => ok(true, 'keep: the link refuses other outputs'));
-    }).then(() => k.test()).then((took) => {
-        ok(took && k.holding && bdc.held === 0x2c && k.mode === 'test', 'keep: test holds element 0x2C on');
-        ok(bdc.log.slice(0, 2).join('|') === '10 03|2F E3 B5 03 2C 01', 'keep: session, then hold on');
+    }).then(() => {
+        // Keep on without a layout: it doesn't hold, it asks for the test
+        k.setEnabled(true); bdc.log = [];
+        k.update({ engine: true });
+        ok(!bdc.log.length && k.mode === 'off' && /Press Test 10 s/.test(k.note), 'keep: no layout yet, asks for the test');
+        k.setEnabled(false);
+        bdc.log = [];
+        return k.test();
+    }).then((took) => {
+        const ctl = bdc.log.filter((x) => /^2F/.test(x));
+        ok(took && saved === 1 && k.format === 1 && k.holding && bdc.held === 44, 'keep: test found layout 2 and holds output 45');
+        ok(ctl.join('|') === '2F E3 B5 03 2C 01|2F E3 B5 03 00 2C 01', 'keep: the kit\'s layout (13), then the 2-byte element');
+        ok(/layout 1 .*bad length/.test(notes.join('|')) && /layout 2 works/.test(notes.join('|')), 'keep: each try logged');
         return wait(120);
     }).then(() => {
-        ok(bdc.log.some((x) => x === '3E 00'), 'keep: tester present while held');
-        ok(!k.holding && k.mode === 'off' && bdc.held === null && bdc.session === 1, 'keep: test over, handed back');
-        ok(bdc.log.slice(-2).join('|') === '2F E3 B5 00 2C 00|10 01', 'keep: hand back, then the default session');
-        // enabled: nothing until the engine runs
+        ok(!k.holding && bdc.held === null && bdc.session === 1 && bdc.log.slice(-2).join('|') === '2F E3 B5 00 00 2C 00|10 01', 'keep: test over, handed back with its layout');
+        // enabled, with the layout: held with the engine running
+        k.update({ engine: false }); clock += 2000;      // the earlier engine start is long over
         k.setEnabled(true); bdc.log = [];
         k.update({ engine: false });
         ok(!bdc.log.length && k.mode === 'off', 'keep: waits for the car');
         k.update({ engine: true });
         return wait(30);
     }).then(() => {
-        ok(k.holding && k.mode === 'keep' && bdc.held === 0x2c, 'keep: holds with the engine running');
-        // the output reads off twice (the BDC let it go): asked again
+        ok(k.holding && k.mode === 'keep' && bdc.held === 44 && bdc.log.slice(0, 2).join('|') === '10 03|2F E3 B5 03 00 2C 01', 'keep: holds with the found layout');
         clock += 20000; bdc.log = [];
         k.observe(0); ok(!bdc.log.length, 'keep: one off read is not enough'); k.observe(0);
         return wait(20);
     }).then(() => {
-        ok(bdc.log.slice(0, 2).join('|') === '10 03|2F E3 B5 03 2C 01', 'keep: off twice while held, asked again');
-        // the session is lost: tester present refused, asked again
+        ok(bdc.log.slice(0, 2).join('|') === '10 03|2F E3 B5 03 00 2C 01', 'keep: off twice while held, asked again');
         clock += 20000; bdc.dropSession = true; bdc.log = [];
         return wait(30);
     }).then(() => {
         bdc.dropSession = false;
         ok(bdc.log.indexOf('10 03') > 0 && k.holding, 'keep: session lost, asked again');
-        // auto start-stop: a short stop keeps it, a long one lets it go
         k.update({ engine: false }); clock += 500; k.update({ engine: false });
         ok(k.mode === 'keep', 'keep: a short engine stop keeps it');
         clock += 1000; k.update({ engine: false });
@@ -298,7 +330,6 @@ tests.push(() => {
         return wait(30);
     }).then(() => {
         ok(!k.holding && bdc.held === null && /switched off/.test(k.note), 'keep: switched off, handed back');
-        // refusals: given up after MAX_FAILS
         bdc.refuse = { sid: 0x2f, nrc: 0x22 }; bdc.log = [];
         k.setEnabled(true);
         let p = Promise.resolve();
@@ -307,12 +338,58 @@ tests.push(() => {
     }).then(() => {
         ok(k.fails === 5 && !k.holding && bdc.log.filter((x) => /^2F/.test(x)).length === 5 && /Gave up/.test(notes.join('|')), 'keep: gives up after 5 refusals');
         ok(/conditions not correct/.test(notes.join('|')), 'keep: the refusal named');
-        bdc.refuse = null;
         k.target({ output: 45, statusDid: [0x45, 0x00] });
         ok(k.ctl.join() === '69,1', 'keep: 4500 -> 4501');
         k.target({ output: null });
         ok(!k.state.ready, 'keep: unpinned, nothing to hold');
         return u.control(0x40, 0x2f, [0x45, 0x01, 0x03, 0x2c, 0x01]).then(() => ok(false, 'never'), () => ok(true, 'keep: unpinned, the link allows no output'));
+    });
+});
+tests.push(() => {
+    // the kit's layout works: found at once, no other tries
+    const bdc = fakeBdc(0);
+    return keeperFor(bdc).then(({ k }) => {
+        k.target({ output: 45, statusDid: [0xe3, 0xb9] });
+        return k.test().then((took) => {
+            ok(took && k.format === 0 && bdc.log.filter((x) => /^2F/.test(x)).join() === '2F E3 B5 03 2C 01', 'keep: the kit\'s layout, first try');
+            return k.release('done');
+        });
+    });
+});
+tests.push(() => {
+    // a layout that is taken but switches on another output too: handed back, stopped
+    const bdc = fakeBdc(2, true);
+    const notes = [];
+    return keeperFor(bdc).then(({ k }) => {
+        k.on('note', (t) => notes.push(t));
+        k.target({ output: 45, statusDid: [0xe3, 0xb9] });
+        return k.test().then((took) => {
+            ok(!took && k.format === null && !k.holding && /also switched on lamp output 3/.test(notes.join('|')), 'keep: another output switched on, stopped');
+            ok(bdc.held === null && !bdc.other && bdc.session === 1 && bdc.log.indexOf('2F E3 B5 00 2C 00 00') >= 0, 'keep: handed back with the taken layout');
+        });
+    });
+});
+tests.push(() => {
+    // the logos already lit: no test (nothing to check against)
+    const bdc = fakeBdc(1);
+    bdc.held = 44;
+    const notes = [];
+    return keeperFor(bdc).then(({ k }) => {
+        k.on('note', (t) => notes.push(t));
+        k.target({ output: 45, statusDid: [0xe3, 0xb9] });
+        return k.test().then((took) => ok(!took && /already ON/.test(notes.join('|')) && !bdc.log.some((x) => /^2F/.test(x)), 'keep: no test with the output already on'));
+    });
+});
+tests.push(() => {
+    // none of the layouts: says so, hands back
+    const bdc = fakeBdc(0);
+    bdc.refuse = { sid: 0x2f, nrc: 0x13 };
+    const notes = [];
+    return keeperFor(bdc).then(({ k }) => {
+        k.on('note', (t) => notes.push(t));
+        k.target({ output: 45, statusDid: [0xe3, 0xb9] });
+        return k.test().then((took) => ok(!took && bdc.log.filter((x) => /^2F/.test(x)).length === uds.FORMATS.length && /took none of the 4 layouts/.test(notes.join('|')) && bdc.session === 1,
+            'keep: every layout refused, said, session ended'));
     });
 });
 

@@ -99,10 +99,14 @@ class LightLog extends OnlineApp {
         } });
         this._finder.on('change', () => { this._dirty = true; });
         this._keepFile = this._file.path ? path.join(path.dirname(this._file.path), 'lightlog-keep.json') : null;
-        this._keeper = new Keeper({ uds: this._uds, log: logger });
+        let kept = {};
+        try { if (this._keepFile) kept = JSON.parse(fs.readFileSync(this._keepFile, 'utf8')) || {}; } catch (e) { /* off */ }
+        this._keeper = new Keeper({ uds: this._uds, log: logger, format: kept.format,
+            readStatus: () => (this._lampDid ? this._uds.read(lamps.BDC, this._lampDid, 8000) : Promise.resolve(null)) });
+        this._keeper.enabled = kept.enabled === true;
         this._keeper.on('note', (text) => this._journal.note('KEEP ' + text));
         this._keeper.on('change', () => { this._dirty = true; });
-        try { if (this._keepFile && JSON.parse(fs.readFileSync(this._keepFile, 'utf8')).enabled === true) this._keeper.enabled = true; } catch (e) { /* off */ }
+        this._keeper.on('format', () => this._saveKeep());
         this._journal.on('event', (e) => {
             const text = line(e);
             logger.info('LIGHT ' + text);
@@ -264,8 +268,13 @@ class LightLog extends OnlineApp {
         this._keep();
         if (what === 'test') { k.test(); return; }
         k.setEnabled(!k.enabled);
-        try { if (this._keepFile) fs.writeFileSync(this._keepFile, JSON.stringify({ enabled: k.enabled })); } catch (e) { logger.warn('keep not saved: ' + e.message); }
+        this._saveKeep();
         this._keep();
+    }
+
+    _saveKeep() {
+        const k = this._keeper;
+        try { if (this._keepFile) fs.writeFileSync(this._keepFile, JSON.stringify({ enabled: k.enabled, format: k.format })); } catch (e) { logger.warn('keep not saved: ' + e.message); }
     }
 
     /* ---- the finder ---- */

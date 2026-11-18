@@ -69,9 +69,10 @@ refuses anything else before it reaches the car, and the tests check that no mod
 Once you've found the logos' **lamp output** (on the G87 tested so far: **lamp output 45**), pin it under **All**.
 The **Keep on** panel at the bottom of **Seat** then offers:
 
-- **Test 10 s**: asks the body controller to hold that output on for 10 seconds, then hands it back. Try it first,
-  with the logos dark (engine running): they should light for 10 s. The panel and the log say whether the body
-  controller took it, or what it answered.
+- **Test 10 s**: asks the body controller to hold that output on for 10 seconds, then hands it back. Press it with
+  the logos dark (engine running): they should light for 10 s. The first time, it also finds the **record layout**
+  your body controller takes (see below). The panel and the log (`KEEP` lines) say what it tried and what the body
+  controller answered.
 - **Keep on: ON / OFF**: with it ON, the output is held on from the engine's first start until the engine has been
   off for 2 minutes (so auto start-stop at the lights doesn't drop it), every drive. Your choice is kept.
 
@@ -80,9 +81,25 @@ How, the way the MIT-licensed idrive7-apps kit drives these outputs:
 | Step | Request |
 |---|---|
 | the body controller's extended diagnostic session | `10 03` |
-| hold the output on | `2F E3B5 03 <element> 01` (`2F 4501 …` on older body controllers) |
+| hold the output on | `2F E3B5 <layout, on>` (`2F 4501 …` on older body controllers) |
 | keep the session, every 2 s | `3E 00` |
-| hand it back, then the default session | `2F E3B5 00 <element> 00`, `10 01` |
+| hand it back, then the default session | `2F E3B5 <layout, back>`, `10 01` |
+
+The kit's layout is `03 <element> 01` (back: `00 <element> 00`). The G87 answered that with **"bad length"**
+(NRC 13), so Test tries these in turn, for the pinned output only, and keeps the first that works:
+
+| Layout | On | Back |
+|---|---|---|
+| 1, the kit's | `03 2C 01` | `00 2C 00` |
+| 2, a 2-byte element | `03 00 2C 01` | `00 00 2C 00` |
+| 3, a trailing byte | `03 2C 01 00` | `00 2C 00 00` |
+| 4, a 2-byte state | `03 2C 00 01` | `00 2C 00 00` |
+
+(shown for output 45, element `0x2C`). It only tests with the output reading OFF. A refusal that means "not this
+layout" (bad length, out of range, sub-function not supported) moves on to the next. Any other refusal stops it. A
+layout counts only if the body controller takes it **and** the output then reads ON **and** no other output
+switched on. If another one did, everything is handed back and it stops. The layout found is saved, and Keep on
+holds only with a layout Test found.
 
 The element is the output number minus one: **output 45 is element 44 (`0x2C`)**. The control identifier
 follows the one the lamp outputs were read with (`E3B9` → `E3B5`, `4500` → `4501`).
@@ -98,6 +115,7 @@ What happens when:
 | the output reads OFF twice while held | asks again (at most every 10 s) |
 | the session is lost (tester present refused) | opens it and asks again |
 | 5 refusals in a row | gives up and says so; switch Keep on off and on to try again |
+| Keep on is ON but no layout found yet | holds nothing, and asks for Test 10 s |
 | engine off for 2 minutes, Keep on switched off, the app stopping | hands the output back and leaves the session |
 | the app crashes or the head unit stops | nothing is sent any more: the body controller ends the session after a few seconds and takes the output back by itself |
 

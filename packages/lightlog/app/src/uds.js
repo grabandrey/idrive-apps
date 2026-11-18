@@ -16,8 +16,10 @@
  * named (the output the driver pinned):
  *   10 03 / 10 01                 extended diagnostic session / back to the default session
  *   3E 00                         tester present (keeps the session)
- *   2F <ctl> 03 <element> 01      hold that output on (shortTermAdjustment), <ctl> E3B5 (BDC_G05) or 4501 (BDC)
- *   2F <ctl> 00 <element> 00      hand it back to the car (returnControlToECU)
+ *   2F <ctl> <FORMATS[i].on>      hold that output on (shortTermAdjustment), <ctl> E3B5 (BDC_G05) or 4501 (BDC)
+ *   2F <ctl> <FORMATS[i].back>    hand it back to the car (returnControlToECU)
+ * FORMATS are the record layouts the keeper may try (a body controller answers NRC 13 to a length it doesn't
+ * take): the kit's <control> <element> <state> first, then a 2-byte element, a trailing byte, a 2-byte state.
  * checkControl() refuses anything else before it reaches the car. If the app stops talking, the session times out
  * after a few seconds and the body controller takes the output back by itself. The SOME/IP side (link) is passed in: someip_link.js on the car, a fake in the tests.
  *
@@ -55,6 +57,12 @@ function check(target, sid, data) {
 
 const BDC = 0x40;
 const CONTROL_DIDS = [[0xe3, 0xb5], [0x45, 0x01]];
+const FORMATS = [
+    { name: '<control> <element> <state>', on: (el) => [0x03, el, 0x01], back: (el) => [0x00, el, 0x00] },
+    { name: '<control> <element, 2 bytes> <state>', on: (el) => [0x03, 0x00, el, 0x01], back: (el) => [0x00, 0x00, el, 0x00] },
+    { name: '<control> <element> <state> <one more byte>', on: (el) => [0x03, el, 0x01, 0x00], back: (el) => [0x00, el, 0x00, 0x00] },
+    { name: '<control> <element> <state, 2 bytes>', on: (el) => [0x03, el, 0x00, 0x01], back: (el) => [0x00, el, 0x00, 0x00] },
+];
 
 /* throws unless it is one of the few requests the keeper may send (see the top of this file) */
 function checkControl(target, sid, data, allowed) {
@@ -66,9 +74,10 @@ function checkControl(target, sid, data, allowed) {
     if (sid === 0x2f) {
         if (!allowed) throw new Error('control: no output allowed');
         const did = CONTROL_DIDS.find((d) => d[0] === data[0] && d[1] === data[1]);
-        if (!did || data.length !== 5 || data[3] !== allowed.element) throw new Error('control: only the allowed lamp output');
-        if ((data[2] === 0x03 && data[4] === 0x01) || (data[2] === 0x00 && data[4] === 0x00)) return;
-        throw new Error('control: only on, or back to the car');
+        if (!did) throw new Error('control: only the lamp output control identifiers');
+        const rest = data.slice(2), el = allowed.element;
+        if (FORMATS.some((f) => same(rest, f.on(el)) || same(rest, f.back(el)))) return;
+        throw new Error('control: only the allowed lamp output, on or back to the car');
     }
     throw new Error('control: service ' + sid + ' is not allowed');
 }
@@ -192,4 +201,4 @@ class Uds extends EventEmitter {
     }
 }
 
-module.exports = { Uds, IFACE, INSTANCE, MAX_DIDS, BDC, CONTROL_DIDS, check, checkControl, parseFrame, verdictOf, toBytes };
+module.exports = { Uds, IFACE, INSTANCE, MAX_DIDS, BDC, CONTROL_DIDS, FORMATS, check, checkControl, parseFrame, verdictOf, toBytes };
