@@ -1,6 +1,6 @@
 'use strict';
 /*
- * node packages/lightlog/app/tools/preview_ui.js [out.html] [seat|empty|all]: the app's drawn screen (src/ui.js)
+ * node packages/lightlog/app/tools/preview_ui.js [out.html] [seat|empty|all|find]: the app's drawn screen (src/ui.js)
  * with a sample drive, played back onto a browser canvas the way the renderer draws its ops (the player is
  * Vitals' tools/preview_ui.js). Open the file in a browser.
  */
@@ -10,6 +10,8 @@ const ui = require('../src/ui.js');
 const lin = require('../src/lin.js');
 const screen = require('../src/screen_model.js');
 const { Journal } = require('../src/journal.js');
+const lamps = require('../src/lamps.js');
+const { Finder } = require('../src/finder.js');
 
 const out = process.argv[2] || path.join(__dirname, '..', '..', 'design', 'app_preview.html');
 const variant = process.argv[3] || 'seat';
@@ -29,6 +31,8 @@ const bus0 = (on) => [rec10(0x05, 254, 120, 0, 70), rec10(0x07, 254, 120, 0, 70)
 const bus1 = [rec10(0x0c, 254, 120, 0, 70), rec10(0x0e, 254, 120, 0, 70), rec10(0x03, 254, 120, 0, 40), rec10(0x17, 254, 120, 0, 70),
     rec10(0x2b, 254, 120, 0, 60), rec10(0x2d, 254, 120, 0, 60)];
 j.note('Light Logger started');
+const lampBytes = [0, 1, 1, 0, 0x64, 0, 0, 1, 0, 0, 0x32, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0];
+j.lights(2, lamps.parse([0x62, 0xe3, 0xb9].concat(lampBytes), [0xe3, 0xb9]));
 j.lights(0, lin.parseStatus(0, reply(0, bus0(true))));
 j.lights(1, lin.parseStatus(1, reply(1, bus1)));
 j.rpm({ actualValueRPMEngineCrankshaft: 0 });
@@ -39,8 +43,17 @@ if (variant !== 'empty') {
     t += 3000; j.mark();
     j.togglePin('1:43');
 }
-const st = { linkReady: true, buses: [{ modules: 7, on: 6, reads: 12 }, { modules: 6, on: 6, reads: 12 }], engine: true, kmh: 0 };
-const { rec } = ui.draw(new ui.Recorder(), screen.drawModel(j, st, variant === 'all' ? 'all' : 'seat', 'llMark', null));
+const st = { linkReady: true, buses: [{ modules: 7, on: 6, reads: 12 }, { modules: 6, on: 6, reads: 12 }, { modules: 24, on: 8, reads: 12 }, {}], engine: true, kmh: 0 };
+/* the finder, learned, with two snapshots each */
+const finder = new Finder({ uds: null, log: { info() {}, warn() {} } });
+finder.units = [0x40, 0x6d];
+finder.known = { 64: { dids: {}, next: 12288, done: true }, 109: { dids: {}, next: 12288, done: true } };
+for (let i = 0; i < 412; i++) finder.known[64].dids[0xd000 + i] = 1;
+for (let i = 0; i < 37; i++) finder.known[109].dids[0x4000 + i] = 1;
+const snap = (on) => ({ t: t, values: { 'd:6D:4012': on ? '01' : '00', 'd:40:D5A1': on ? '0164' : '0000', 'd:40:D021': on ? '03' : '02', 'd:40:D300': '07' } });
+finder.snaps = { on: [snap(true), snap(true)], off: [snap(false), snap(false)] };
+const view = variant === 'all' ? 'all' : variant === 'find' ? 'find' : 'seat';
+const { rec } = ui.draw(new ui.Recorder(), screen.drawModel(j, st, view, 'llMark', null, finder, 0));
 const words = Array.from(rec.words());
 const atlases = rec.atlases.map((a) => ({ id: a.id, w: a.w, h: a.h, alpha: a.alpha.toString('base64') }));
 

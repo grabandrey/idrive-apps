@@ -13,9 +13,12 @@ car's speed. It changes nothing on the car.
 
 ## What it does
 
-- Every 4 s it reads both LIN buses of the body controller (BDC, `22 DA5F` and `22 E3D1`) through the head unit's
-  own diagnostic link (`InternalTasu`). That gives every ambient light module the BDC drives, each with its place,
-  colour, brightness and faults.
+- Every 4 s it reads, through the head unit's own diagnostic link (`InternalTasu`):
+  - both LIN buses of the body controller (BDC, `22 DA5F` and `22 E3D1`): every **RGB ambient light module**, each
+    with its place, colour, brightness and faults;
+  - the BDC's **lamp outputs** (`22 E3B9`, or `22 4500` on older BDCs): one value per switched light output, the
+    lights that aren't RGB modules. No public table says which output is which, so they're numbered;
+  - any value you pinned from the finder.
 - It follows the engine (`CDS.statusEngineSpeed2`) and the car's speed (`Vehicle2.statusCarSpeed2`).
 - Each change becomes an event: a module found, switched **ON** or **OFF**, dimmed or recoloured, or gone; the
   engine running or off; the car moving or standing still. Lights in or on a seat (driver / passenger seat back,
@@ -35,13 +38,27 @@ car's speed. It changes nothing on the car.
   The log beside them shows only those lights' events, the car's and your marks. **All** shows every module, and
   the text file keeps everything.
 - **It starts with the head unit**, so the welcome light at unlocking is logged before you open the app.
+- **Find**: when the logos aren't among those lights (they may hang off a seat module, or a BDC output with no
+  number here), the finder looks through **every value** the body controller and the seat modules (`0x6D`–`0x6F`)
+  report:
+  1. **Learn** (once, car on): asks each unit for every identifier in `4000–4FFF` and `D000–EFFF`, eight a request,
+     and keeps the ones it answers, with their lengths. A few minutes a unit; it resumes where it stopped.
+  2. **Logos ON**: a snapshot of every learned value while the logos glow.
+  3. **Logos OFF**: another once they're dark.
+  4. The values that are the same in every ON snapshot, the same in every OFF one, and different between the two
+     are listed, seat modules first. Starting the engine changes lots of values, so take **two of each**: anything
+     that moves on its own drops out. **Pin** the likeliest: from then on it's read every round and its changes are
+     in the seat light log, like a light.
+
+  The candidates also go to `lightlog.txt`. What's learned and the snapshots are kept in `lightlog-find.json`.
 
 ### The screen
 
 With MGU Store's **Renderer** (`mgu-render`) installed, the app draws its own screen (above): the seat lights on
-the left, the seat light log on the right, **Read now** and **Mark this moment** at the top. Touch works, and the
-controller moves between the buttons. Without the Renderer it shows the head unit's plain list. **Show** steps
-through *Seat lights now*, *Seat light log* and *All lights now*.
+the left (**Seat**, **All** or **Find**), the seat light log on the right, **Read now** and **Mark this moment** at
+the top. Touch works, and the controller moves between the buttons. Without the Renderer it shows the head unit's
+plain list. **Show** steps through *Seat lights now*, *Seat light log*, *All lights now* and *Finder*, and the
+three Finder rows do the finder's steps.
 
 **Read only.** The app sends nothing but `ReadDataByIdentifier` (22) to one control unit. `uds.js` refuses
 anything else before it reaches the car, and the tests check that no other module sends requests.
@@ -63,13 +80,18 @@ anything else before it reaches the car, and the tests check that no other modul
    on it's always listed first and its changes stay in the seat light log.
 5. Read the seat light log around the mark: what went **OFF**, and right after what (engine running, moving, a
    number of seconds after unlocking).
+6. **Nothing in Seat or All changes with the logos?** Use **Find**: Learn (car on, logos lit, a few minutes), then
+   two **Logos ON** snapshots, start the engine, two **Logos OFF** snapshots. Pin what it lists and check it follows
+   the logos over the next starts.
 
 What the answer means:
 
 | What the log shows | What it means |
 |---|---|
 | A `SEAT` (or `Light 0x..`) module goes OFF at the mark | The logos are BDC ambient light modules. An app could switch them on again over the same link, and that's the next step |
-| Nothing changes at the mark | The logos aren't on the BDC's LIN buses (wired to the seat or another unit). An iDrive app can't reach them this way. Coding or wiring is the route |
+| A lamp output changes at the mark | The BDC switches the logos through a lamp output. Its number is the lead for coding or a keep-on app |
+| Find lists a value that follows the logos | The unit that reports it (BDC or a seat module) knows the logos' state; pin it to confirm. Reading it doesn't switch anything, but it says where the switching happens |
+| Nothing changes anywhere | The logos are switched where the head unit can't see (wired straight to a seat or another unit). Coding or wiring is the route |
 | `the body controller refuses the read` / `stopped answering` | This car's BDC doesn't offer these reads (or another app holds the link). The log says which |
 
 ## Where the log goes
@@ -95,6 +117,8 @@ app/                         the app (source package, id ida_lightlog, built on 
   src/ida_lightlog.js        the app: polling, the screen, the log
   src/uds.js                 the diagnostic link (read only)
   src/lin.js                 the BDC's light module records -> modules
+  src/lamps.js               the BDC's lamp outputs, and pinned values, as modules
+  src/finder.js              learn the units' values, snapshots ON / OFF, the values that follow the logos
   src/journal.js             reads and car data -> events
   src/screen_model.js        what the screen shows: the seat lights, their log, the plain list's rows
   src/ui.js, src/ui_font.js  the drawn screen (draw ops for the renderer) and its glyphs (scripts/bake_font.py)

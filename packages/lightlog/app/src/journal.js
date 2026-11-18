@@ -24,6 +24,9 @@
 const EventEmitter = require('events');
 const lin = require('./lin.js');
 
+/* the sources a read comes from: lin.js's two buses, the BDC's lamp outputs (lamps.js), the finder's pinned values */
+const SOURCES = ['LIN 1', 'LIN 2', 'BDC lamp outputs', 'Pinned values'];
+
 const MAX = 400;
 const MARK_BEFORE = 25000, MARK_AFTER = 15000;
 const ORDER = ['pinned', 'seat', 'mark', 'unknown'];
@@ -42,8 +45,8 @@ class Journal extends EventEmitter {
         super();
         this.now = (o && o.now) || Date.now;
         this.events = [];
-        this._buses = [null, null];         // per bus: Map(nad -> module), null before its first answer
-        this._silent = [0, 0];              // reads without an answer in a row
+        this._buses = SOURCES.map(() => null);    // per source: Map(nad -> module), null before its first answer
+        this._silent = SOURCES.map(() => 0);      // reads without an answer in a row
         this.engine = null;                 // true running / false off / null unknown
         this.moving = null;
         this.rpmValue = null; this.kmh = null;
@@ -62,7 +65,7 @@ class Journal extends EventEmitter {
     }
 
     lights(bus, modules) {
-        const name = lin.BUSES[bus].name;
+        const name = SOURCES[bus];
         if (!modules) {
             this._silent[bus]++;
             if (this._silent[bus] === 3) this._add('link', name + ': the body controller stopped answering');
@@ -72,10 +75,10 @@ class Journal extends EventEmitter {
         this._silent[bus] = 0;
         const before = this._buses[bus];
         const now = new Map();
-        modules.forEach((m) => now.set(m.nad, m));
+        modules.forEach((m) => now.set(m.key || m.nad, m));
         this._buses[bus] = now;
         if (!before) {
-            this._add('link', name + ': ' + modules.length + ' light modules, ' + modules.filter((m) => m.on).length + ' on');
+            this._add('link', name + ': ' + modules.length + (bus < 2 ? ' light modules, ' : bus === 2 ? ' outputs, ' : ' values, ') + modules.filter((m) => m.on).length + ' on');
             modules.forEach((m) => this._add(m.seat ? 'seat' : 'light', 'found ' + lin.describe(m), m.seat, keyOf(m)));
             return;
         }
@@ -91,7 +94,7 @@ class Journal extends EventEmitter {
             if (what) changed(m, what + ': ' + lin.describe(m));
         });
         before.forEach((m, nad) => {
-            if (!now.has(nad)) changed(m, 'gone ' + m.name + ' (' + name + ' #' + nad + ')');
+            if (!now.has(nad)) changed(m, 'gone ' + m.name + (bus < 2 ? ' (' + name + ' #' + nad + ')' : ''));
         });
     }
 
@@ -133,7 +136,7 @@ class Journal extends EventEmitter {
         if (this.pins.has(key)) out.push('pinned');
         if (m.seat) out.push('seat');
         if (this._changes.some((c) => c.key === key && this._markTimes.some((t) => c.t >= t - MARK_BEFORE && c.t <= t + MARK_AFTER))) out.push('mark');
-        if (!m.known) out.push('unknown');
+        if (!m.known && !m.lamp && !m.did) out.push('unknown');
         return out;
     }
 
@@ -154,23 +157,28 @@ class Journal extends EventEmitter {
     togglePin(key) {
         if (this.pins.has(key)) this.pins.delete(key); else this.pins.add(key);
         const m = this.modules().find((x) => x.key === key);
-        const what = m ? m.name + ' (' + lin.BUSES[m.bus].name + ', 0x' + lin.hex(m.loc) + ')' : key;
+        const what = m ? m.name + (m.bus < 2 ? ' (' + SOURCES[m.bus] + ', 0x' + lin.hex(m.loc) + ')' : '') : key;
         this._add('link', (this.pins.has(key) ? 'pinned ' : 'unpinned ') + what + ' as a seat logo', false, key);
         this.emit('pins', Array.from(this.pins));
         return this.pins.has(key);
     }
 
-    setPins(keys) { this.pins = new Set((keys || []).filter((k) => /^[01]:\d+$/.test(k))); }
+    setPins(keys) { this.pins = new Set((keys || []).filter((k) => PIN.test(k))); }
+
+    /* the finder's values pinned: 'd:<ecu>:<did>' keys */
+    pinnedValues() { return Array.from(this.pins).filter((k) => /^d:/.test(k)); }
 
     answered(bus) { return !!this._buses[bus]; }
 }
 
 /* a module's key: its bus and location code ('0:27'), the same across reads and starts */
-function keyOf(m) { return m.bus + ':' + m.loc; }
+function keyOf(m) { return m.key || m.bus + ':' + m.loc; }
+const PIN = /^([0-2]:\d+|d:[0-9A-F]{2}:[0-9A-F]{4})$/;
 
 /* what changed between two reads of one module, or '' */
 function change(a, b) {
     if (a.on !== b.on) return b.on ? 'ON' : 'OFF';
+    if ((a.lamp || a.did) && a.raw !== b.raw) return 'value ' + a.raw + ' -> ' + b.raw;
     if (a.fault !== b.fault) return b.fault ? 'fault' : 'fault cleared';
     if (Math.abs(a.bright - b.bright) >= BRIGHT_STEP) return 'brightness ' + a.bright + '% -> ' + b.bright + '%';
     if (b.on && (Math.abs(a.r - b.r) >= COLOUR_STEP || Math.abs(a.g - b.g) >= COLOUR_STEP || Math.abs(a.b - b.b) >= COLOUR_STEP ||
@@ -184,4 +192,4 @@ function line(e) {
     return clock(e.t) + '  ' + tag + '  ' + e.text;
 }
 
-module.exports = { Journal, change, line, clock, keyOf, RPM, SPEED, MARK_BEFORE, MARK_AFTER };
+module.exports = { Journal, SOURCES, change, line, clock, keyOf, RPM, SPEED, MARK_BEFORE, MARK_AFTER };

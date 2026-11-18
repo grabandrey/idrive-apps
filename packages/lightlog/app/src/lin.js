@@ -75,6 +75,7 @@ function parseStatus(bus, uds) {
 
 /* one module, short: "Driver seat back (LIN 1 #3, 0x1B): on 80% rgb 255,255,255" */
 function describe(m) {
+    if (m.lamp || m.did) return m.name + ': ' + (m.on ? 'on' : 'off') + ' (' + m.raw + ')';
     const where = BUSES[m.bus].name + ' #' + m.nad + ', 0x' + hex(m.loc);
     const state = m.on ? 'on ' + m.bright + '% rgb ' + m.r + ',' + m.g + ',' + m.b + (m.white ? ' white ' + m.white : '') : 'off';
     return m.name + ' (' + where + '): ' + state + (m.fault ? ' FAULT' : '');

@@ -26,9 +26,11 @@ const logging = require('oap-sdk/src/logging/logging');
 const { SomeipLink } = require('./someip_link.js');
 const { Uds, IFACE: TASU } = require('./uds.js');
 const lin = require('./lin.js');
-const { Journal, line } = require('./journal.js');
+const { Journal, SOURCES, line } = require('./journal.js');
 const { LogFile } = require('./log_file.js');
 const screen = require('./screen_model.js');
+const lamps = require('./lamps.js');
+const { Finder } = require('./finder.js');
 const { Gpu } = require('./gpu.js');
 const ui = require('./ui.js');
 
@@ -72,7 +74,9 @@ class LightLog extends OnlineApp {
         this._timers = [];
         this._pollTimer = null;
         this._polling = false;
-        this._buses = [0, 1].map(() => ({ reads: 0, modules: null, on: 0, refused: null, refusedAt: 0, raw: '' }));
+        this._buses = SOURCES.map(() => ({ reads: 0, modules: null, on: 0, refused: null, refusedAt: 0, raw: '' }));
+        this._lampDid = null;
+        this._page = 0;
 
         this._journal = new Journal();
         this._file = new LogFile([process.env.HOME, process.cwd(), os.tmpdir()], 'lightlog.txt');
@@ -83,6 +87,12 @@ class LightLog extends OnlineApp {
         });
         this._link = new SomeipLink(logger);
         this._uds = new Uds(this._link, logger);
+        const findFile = this._file.path ? path.join(path.dirname(this._file.path), 'lightlog-find.json') : null;
+        this._finder = new Finder({ uds: this._uds, log: logger, store: {
+            load: () => { try { return findFile ? JSON.parse(fs.readFileSync(findFile, 'utf8')) : null; } catch (e) { return null; } },
+            save: (o) => { try { if (findFile) fs.writeFileSync(findFile, JSON.stringify(o)); } catch (e) { logger.warn('finder not saved: ' + e.message); } },
+        } });
+        this._finder.on('change', () => { this._dirty = true; });
         this._journal.on('event', (e) => {
             const text = line(e);
             logger.info('LIGHT ' + text);
@@ -153,41 +163,95 @@ class LightLog extends OnlineApp {
         this._timers.push(t);
     }
 
-    /* one round: both buses, one after the other; then the next round */
+    /* one round, one read after another: both LIN buses, the lamp outputs, the pinned values; then the next round.
+     * While the finder learns or takes a snapshot, the rounds wait: the link takes one request at a time. */
     _poll() {
         if (this._shutdown || this._polling) return Promise.resolve();
         clearTimeout(this._pollTimer);
+        if (this._finder.phase !== 'idle') { this._pollTimer = setTimeout(() => this._poll(), 2000); return Promise.resolve(); }
         this._polling = true;
         let answered = 0;
-        const readBus = (bus) => {
-            const st = this._buses[bus];
-            if (st.refused && Date.now() - st.refusedAt < REFUSED_MS) return Promise.resolve();
+        const read = (i, did, parse) => {
+            const st = this._buses[i], name = SOURCES[i];
+            if (st.refused && Date.now() - st.refusedAt < REFUSED_MS) return Promise.resolve(false);
             st.reads++;
-            return this._uds.read(lin.BDC, lin.readRequest(bus)).then((u) => {
+            return this._uds.read(lin.BDC, did).then((u) => {
                 if (u && u[0] === 0x7f) {
                     const why = 'NRC 0x' + lin.hex(u[2]);
-                    if (st.refused !== why) this._journal.note(lin.BUSES[bus].name + ': the body controller refuses the read (' + why + ')');
+                    if (st.refused !== why) this._journal.note(name + ': the body controller refuses the read (' + why + ')');
                     st.refused = why; st.refusedAt = Date.now();
-                    return;
+                    return false;
                 }
                 st.refused = null;
-                const mods = u ? lin.parseStatus(bus, u) : null;
+                const mods = u ? parse(u) : null;
                 if (mods) {
                     answered++;
                     const raw = lin.hexBytes(u);
-                    if (raw !== st.raw) { st.raw = raw; logger.info(lin.BUSES[bus].name + ' raw ' + raw); }
+                    if (raw !== st.raw) { st.raw = raw; logger.info(name + ' raw ' + raw); }
                     st.modules = mods.length; st.on = mods.filter((m) => m.on).length;
                 }
-                this._journal.lights(bus, mods);
+                this._journal.lights(i, mods);
+                return !!mods;
             }, (e) => {
-                logger.warn(lin.BUSES[bus].name + ' read failed: ' + (e && e.message));
-                this._journal.lights(bus, null);
+                logger.warn(name + ' read failed: ' + (e && e.message));
+                this._journal.lights(i, null);
+                return false;
             });
         };
-        return readBus(0).then(() => readBus(1)).then(() => {
-            this._polling = false;
-            this._dirty = true;
-            if (!this._shutdown) this._pollTimer = setTimeout(() => this._poll(), answered ? POLL_MS : SLOW_MS);
+        /* the lamp outputs: the identifier that answered before, else each in turn */
+        const readLamps = () => {
+            const st = this._buses[2];
+            if (st.refused && Date.now() - st.refusedAt < REFUSED_MS) return Promise.resolve();
+            const order = this._lampDid === null ? lamps.DIDS : [this._lampDid];
+            return order.reduce((p, did) => p.then((ok) => {
+                if (ok) return true;
+                st.refused = null;
+                return read(2, did, (u) => lamps.parse(u, did)).then((got) => { if (got) this._lampDid = did; return got; });
+            }), Promise.resolve(false)).then((ok) => { if (!ok && this._lampDid) this._lampDid = null; });
+        };
+        /* the finder's values pinned as logos, each read alone */
+        const readPinned = () => {
+            const keys = this._journal.pinnedValues();
+            if (!keys.length) return Promise.resolve();
+            const mods = [];
+            return keys.reduce((p, key, n) => p.then(() => {
+                const m = /^d:([0-9A-F]{2}):([0-9A-F]{4})$/.exec(key);
+                const ecu = parseInt(m[1], 16), did = parseInt(m[2], 16);
+                return this._uds.read(ecu, [did >> 8, did & 255], 8000).then((u) => {
+                    if (u && u[0] === 0x62) mods.push(lamps.valueModule(ecu, did, u.slice(3), null, n + 1));
+                }, () => null);
+            }), Promise.resolve()).then(() => { this._journal.lights(3, mods.length ? mods : null); });
+        };
+        return read(0, lin.readRequest(0), (u) => lin.parseStatus(0, u))
+            .then(() => read(1, lin.readRequest(1), (u) => lin.parseStatus(1, u)))
+            .then(readLamps).then(readPinned).catch((e) => logger.warn('round: ' + (e && e.message)))
+            .then(() => {
+                this._polling = false;
+                this._dirty = true;
+                if (!this._shutdown) this._pollTimer = setTimeout(() => this._poll(), answered ? POLL_MS : SLOW_MS);
+            });
+    }
+
+    /* ---- the finder ---- */
+    _find(what) {
+        const f = this._finder;
+        if (f.phase !== 'idle') { this._journal.note('finder busy (' + f.phase + '), press again when it is done'); return; }
+        if (what === 'learn') {
+            this._journal.note('finder: learning what the body controller and the seat modules report (a few minutes a unit; keep the car on)');
+            f.learn().then(() => {
+                const st = f.state;
+                this._journal.note('finder: ' + (st.units.length ? st.units.map((u) => u.name + ' ' + u.values + ' values' + (u.done ? '' : ' (not finished)')).join(', ') : 'no unit answered'));
+            });
+            return;
+        }
+        if (!f.state.learnedAll) { this._journal.note('finder: press Learn first'); return; }
+        this._journal.note('finder: snapshot with the logos ' + what.toUpperCase());
+        f.snapshot(what).then((snap) => {
+            if (!snap) return;
+            const c = f.candidates(), st = f.state;
+            this._journal.note('finder: ' + Object.keys(snap.values).length + ' values read; logos ON x' + st.counts.on + ', OFF x' + st.counts.off +
+                (st.counts.on && st.counts.off ? ': ' + c.length + ' follow the logos' : ''));
+            c.slice(0, 60).forEach((x) => this._file.write('    candidate ' + lamps.unitName(x.unit) + ' 0x' + lamps.hex(x.did, 4) + '  ON ' + x.on + '  OFF ' + x.off));
         });
     }
 
@@ -309,8 +373,8 @@ class LightLog extends OnlineApp {
     _frame() {
         const gpu = this._gpu, u = this._ui;
         if (!gpu || !gpu.ready || !gpu.visible) return;
-        const m = screen.drawModel(this._journal, this._statusData(), this._view, u.focus, u.pressed);
-        const key = JSON.stringify([m.status, m.view, m.seat, m.all.length, m.log.length && m.log[0], m.log.length, m.pins, m.marks, m.focus, m.pressed]);
+        const m = screen.drawModel(this._journal, this._statusData(), this._view, u.focus, u.pressed, this._finder, this._page);
+        const key = JSON.stringify([m.status, m.view, m.seat, m.all.length, m.log.length && m.log[0], m.log.length, m.pins, m.marks, m.focus, m.pressed, m.find, m.page]);
         const now = Date.now();
         if (gpu.waiting && now - gpu.sentAt < 1000) return;
         if (key === u.key && now - gpu.sentAt < 1000) return;
@@ -335,6 +399,9 @@ class LightLog extends OnlineApp {
         setTimeout(() => { if (!u.down) u.pressed = null; }, 150);
         if (!t || t.key !== key) return;
         if (key.indexOf('pin:') === 0) { this._journal.togglePin(key.slice(4)); this._dirty = true; return; }
+        if (key.indexOf('view:') === 0) { this._view = key.slice(5); this._page = 0; this._dirty = true; return; }
+        if (key === 'page:next') { this._page++; return; }
+        if (key === 'page:prev') { this._page = Math.max(0, this._page - 1); return; }
         const b = screen.BUTTONS.find((x) => x.name === key);
         if (b) this._press(b);
     }
@@ -345,7 +412,10 @@ class LightLog extends OnlineApp {
         this._lastPress[b.name] = now;
         if (b.name === 'llMark') this._journal.mark();
         else if (b.name === 'llRead') { this._journal.note('read asked for on the screen'); this._poll(); }
-        else if (b.name === 'llView') this._view = this._drawn() ? (this._view === 'all' ? 'seat' : 'all') : screen.nextView(this._view);
+        else if (b.name === 'llView') this._view = this._drawn() ? screen.nextDrawnView(this._view) : screen.nextView(this._view);
+        else if (b.name === 'llLearn') { this._view = 'find'; this._find('learn'); }
+        else if (b.name === 'llSnapOn') { this._view = 'find'; this._find('on'); }
+        else if (b.name === 'llSnapOff') { this._view = 'find'; this._find('off'); }
         else if (b.name === 'llClear') { this._journal.clear(); this._file.write('---- screen log cleared ----'); }
         this._dirty = true;
         this._render();
@@ -371,7 +441,7 @@ class LightLog extends OnlineApp {
             this._set(b.name, 'FrequencyText', v);
             this._set(b.name, 'FrequencyVisible', !!v);
         });
-        screen.lines(this._view, j).forEach((text, i) => this._set(screen.LINE_IDS[i].name, 'PrimaryText', text));
+        screen.lines(this._view, j, this._finder).forEach((text, i) => this._set(screen.LINE_IDS[i].name, 'PrimaryText', text));
         Promise.resolve(this.rhmiApplication.flush && this.rhmiApplication.flush()).catch(() => { /* next render */ });
     }
 
@@ -380,6 +450,7 @@ class LightLog extends OnlineApp {
         logger.info('shutting down (' + reason + ')');
         this._file.write('---- stopped (' + reason + ') ----');
         clearTimeout(this._pollTimer);
+        this._finder.stop();
         this._timers.forEach((t) => { clearInterval(t); clearTimeout(t); });
         clearInterval(this._ui.timer);
         if (this._gpu) this._gpu.close();

@@ -5,7 +5,7 @@
     "type": "OnlineApp",
     "name": "ida_lightlog",
     "vendor": "LightLog",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "defaultLanguage": "en_GB",
     "uiDescriptions": [
       {

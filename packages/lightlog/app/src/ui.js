@@ -138,7 +138,9 @@ const TAG = {
     pinned: ['PINNED', C.green], seat: ['SEAT', C.seat], mark: ['CHANGED AT MARK', C.mark], unknown: ['UNKNOWN CODE', C.unknown],
 };
 const KIND = { seat: ['SEAT', C.seat], light: ['LIGHT', C.dim], car: ['CAR', C.dim], mark: ['MARK', C.mark], link: ['APP', C.faint] };
-const BUS = ['LIN 1', 'LIN 2'];
+const BUS = ['LIN 1', 'LIN 2', 'Lamps', 'Pinned'];
+const UNIT = { 0x40: 'BDC', 0x10: 'BDC gateway', 0x6d: 'Seat module 0x6D', 0x6e: 'Seat module 0x6E', 0x6f: 'Seat module 0x6F' };
+const hex4 = (n) => n.toString(16).toUpperCase().padStart(4, '0');
 const hex2 = (n) => n.toString(16).toUpperCase().padStart(2, '0');
 const pad = (n) => (n < 10 ? '0' : '') + n;
 function clock(t) { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
@@ -203,9 +205,10 @@ function draw(rec, m) {
     const chips = [];
     chips.push(st.linkReady ? ['Diagnostic link', C.green] : ['Link: ' + (st.linkError || 'starting'), st.linkError ? C.red : C.orange]);
     (st.buses || []).forEach((b, i) => {
+        if (i === 3) return;
         if (b.refused) chips.push([BUS[i] + ' refused', C.red]);
         else if (b.modules === null || b.modules === undefined) chips.push([BUS[i] + (b.reads ? ' no answer' : ' ...'), b.reads ? C.orange : C.faint]);
-        else chips.push([BUS[i] + ' · ' + b.modules + ' lights', C.green]);
+        else chips.push([BUS[i] + ' · ' + b.modules, C.green]);
     });
     chips.push([st.engine === true ? 'Engine running' : st.engine === false ? 'Engine off' : 'Engine ?', st.engine ? C.green : C.faint]);
     if (st.kmh !== null && st.kmh !== undefined) chips.push([Math.round(st.kmh) + ' km/h', C.faint]);
@@ -222,20 +225,25 @@ function draw(rec, m) {
     /* ---- left: the seat lights (or all of them) ---- */
     const L = { x: 90, y: 130, w: 1510, h: 610 };
     rec.rrect(L.x, L.y, L.w, L.h, 28, C.card);
-    const all = m.view === 'all';
-    rec.text('head', all ? 'ALL LIGHTS' : 'SEAT LIGHTS', L.x + 44, L.y + 58, C.faint, 'left', 4);
-    if (!all) rec.text('small', 'in a seat, an unknown code, changed at a mark, or pinned', L.x + 290, L.y + 56, C.faint);
-    // the Seat | All switch
-    const sw = 300, sx = L.x + L.w - 40 - sw, sy = L.y + 22, sh = 56;
+    const all = m.view === 'all', find = m.view === 'find';
+    rec.text('head', find ? 'FIND THE LOGOS' : all ? 'ALL LIGHTS' : 'SEAT LIGHTS', L.x + 44, L.y + 58, C.faint, 'left', 4);
+    if (!all && !find) rec.text('small', 'in a seat, an unknown code, changed at a mark, or pinned', L.x + 290, L.y + 56, C.faint);
+    if (find) rec.text('small', 'body controller + seat modules, logos ON vs OFF', L.x + 330, L.y + 56, C.faint);
+    // the Seat | All | Find switch (the controller's llView steps through it)
+    const views = [['seat', 'Seat'], ['all', 'All'], ['find', 'Find']];
+    const sw = 390, sx = L.x + L.w - 40 - sw, sy = L.y + 22, sh = 56, seg = sw / views.length;
     rec.rrect(sx, sy, sw, sh, sh / 2, m.focus === 'llView' ? C.tileFocus : C.tile);
-    rec.rrect(all ? sx + sw / 2 : sx, sy, sw / 2, sh, sh / 2, C.line);
-    rec.text('small', 'Seat', sx + sw / 4, sy + 37, all ? C.dim : C.text, 'center');
-    rec.text('small', 'All', sx + sw * 3 / 4, sy + 37, all ? C.text : C.dim, 'center');
+    views.forEach((v, i) => {
+        const on = m.view === v[0];
+        if (on) rec.rrect(sx + i * seg, sy, seg, sh, sh / 2, C.line);
+        rec.text('small', v[1], sx + i * seg + seg / 2, sy + 37, on ? C.text : C.dim, 'center');
+        targets.push({ key: 'view:' + v[0], x: sx + i * seg, y: sy, w: seg, h: sh });
+    });
     ring('llView', sx, sy, sw, sh, sh / 2);
-    targets.push({ key: 'llView', x: sx, y: sy, w: sw, h: sh });
 
     const pinTarget = (mod, x, y, w, h) => targets.push({ key: 'pin:' + mod.key, x: x, y: y, w: w, h: h });
-    if (!all) {
+    if (find) drawFind(rec, m, L, targets, button, pinTarget);
+    else if (!all) {
         const list = m.seat || [];
         if (!list.length) {
             (m.noSeat || []).forEach((t, i) => rec.text(i ? 'body' : 'strong', fit(rec, i ? 'body' : 'strong', t, L.w - 88), L.x + 44, L.y + 160 + i * 60 + (i ? 16 : 0), i ? C.dim : C.text));
@@ -271,17 +279,30 @@ function draw(rec, m) {
     } else {
         const list = m.all || [];
         if (!list.length) rec.text('strong', 'No answer from the body controller yet.', L.x + 44, L.y + 170, C.dim);
-        const cols = 3, rows = 9, cw = (L.w - 48) / cols, rh = 52;
-        list.slice(0, cols * rows).forEach((mod, i) => {
+        const cols = 3, rows = 9, per = cols * rows, cw = (L.w - 48) / cols, rh = 52;
+        const pages = Math.max(1, Math.ceil(list.length / per)), page = Math.min(m.page || 0, pages - 1);
+        list.slice(page * per, page * per + per).forEach((mod, i) => {
             const c = Math.floor(i / rows), r = i % rows;
             const x = L.x + 24 + c * cw, y = L.y + 96 + r * rh;
-            swatch(rec, x + 30, y + rh / 2, 13, mod);
-            rec.text('small', fit(rec, 'small', mod.name, cw - 190), x + 58, y + 35, mod.seat || !mod.known ? C.seat : C.dim);
-            rec.text('small', mod.on ? mod.bright + ' %' : 'off', x + cw - 70, y + 35, mod.on ? C.text : C.faint, 'right');
-            pinIcon(rec, x + cw - 34, y + rh / 2 - 1, (m.pins || []).indexOf(mod.key) >= 0);
-            pinTarget(mod, x + cw - 64, y, 60, rh);
+            const name = mod.lamp ? 'Lamp output ' + mod.nad : mod.did ? mod.name : mod.name;
+            if (mod.lamp || mod.did) {
+                rec.rrect(x + 20, y + rh / 2 - 9, 20, 18, 4, mod.on ? C.text : C.track);
+            } else swatch(rec, x + 30, y + rh / 2, 13, mod);
+            rec.text('small', fit(rec, 'small', name, cw - 230), x + 58, y + 35, mod.seat || (!mod.known && !mod.lamp) ? C.seat : C.dim);
+            rec.text('small', mod.lamp || mod.did ? mod.raw : mod.on ? mod.bright + ' %' : 'off', x + cw - 100, y + 35, mod.on ? C.text : C.faint, 'right');
+            pinIcon(rec, x + cw - 62, y + rh / 2 - 1, (m.pins || []).indexOf(mod.key) >= 0);
+            pinTarget(mod, x + cw - 92, y, 60, rh);
+            if (c > 0) rec.rect(x - 4, y + 8, 1, rh - 16, C.line);
         });
-        if (list.length > cols * rows) rec.text('small', '+ ' + (list.length - cols * rows) + ' more in lightlog.txt', L.x + 44, L.y + L.h - 18, C.faint);
+        if (pages > 1) {
+            const py = L.y + L.h - 62;
+            rec.text('small', 'Page ' + (page + 1) + ' of ' + pages + '  ·  ' + list.length + ' lights', L.x + 44, py + 38, C.faint);
+            [['page:prev', '<', L.x + L.w - 260], ['page:next', '>', L.x + L.w - 140]].forEach((b) => {
+                rec.rrect(b[2], py, 100, 52, 26, C.tile);
+                rec.text('strong', b[1], b[2] + 50, py + 39, C.text, 'center');
+                targets.push({ key: b[0], x: b[2], y: py, w: 100, h: 52 });
+            });
+        }
     }
 
     /* ---- right: the seat light log ---- */
@@ -300,6 +321,61 @@ function draw(rec, m) {
         if (i < 10) rec.rect(R.x + 44, y + 14, R.w - 88, 1, C.line);
     });
     return { rec: rec, targets: targets };
+}
+
+/* the finder: three steps, then the values that follow the logos */
+function drawFind(rec, m, L, targets, button, pinTarget) {
+    const f = m.find;
+    if (!f) { rec.text('body', 'The finder is not running.', L.x + 44, L.y + 160, C.dim); return; }
+    const gw = (L.w - 48 - 32) / 3, gy = L.y + 96, gh = 150;
+    const unitsLine = !f.unitsKnown ? 'Not done yet' : f.units.length ? f.units.map((u) => u.name.replace('Seat module ', 'Seat ') + ' ' + u.values).join(' · ') : 'No unit answered';
+    const steps = [
+        ['llLearn', '1  Learn', 'Once, car on, a few min a unit', unitsLine],
+        ['llSnapOn', '2  Logos ON', 'Snapshot while they glow', 'Taken ' + f.counts.on + 'x'],
+        ['llSnapOff', '3  Logos OFF', 'Snapshot once they are dark', 'Taken ' + f.counts.off + 'x'],
+    ];
+    steps.forEach((st, i) => {
+        const x = L.x + 24 + i * (gw + 16);
+        const ready = i === 0 || f.learnedAll;
+        rec.rrect(x, gy, gw, gh, 20, m.focus === st[0] ? C.tileFocus : C.tile);
+        rec.text('strong', st[1], x + 28, gy + 50, ready ? C.text : C.faint);
+        rec.text('small', st[2], x + 28, gy + 90, C.dim);
+        rec.text('small', fit(rec, 'small', st[3], gw - 56), x + 28, gy + 128, i === 0 && f.learnedAll ? C.green : C.faint);
+        if (m.pressed === st[0]) rec.rrect(x, gy, gw, gh, 20, [C.accent[0], C.accent[1], C.accent[2], 90]);
+        if (m.focus === st[0]) rec.stroke(x, gy, gw, gh, 20, 4, C.accent);
+        targets.push({ key: st[0], x: x, y: gy, w: gw, h: gh });
+    });
+    // busy: a bar
+    const p = f.progress, by = gy + gh + 22;
+    if (f.phase !== 'idle' && p) {
+        const k = Math.max(0, Math.min(1, p.done / Math.max(1, p.total)));
+        rec.rrect(L.x + 24, by, L.w - 48, 14, 7, C.track);
+        rec.rrect(L.x + 24, by, Math.max(14, (L.w - 48) * k), 14, 7, C.accent);
+        rec.text('small', (f.phase === 'learning' ? 'Learning ' + (p.name || '') : 'Reading, logos ' + String(p.snapshot).toUpperCase()) + '  ' + Math.round(k * 100) + ' %', L.x + 24, by + 48, C.dim);
+        return;
+    }
+    if (f.error) rec.text('small', 'Error: ' + f.error, L.x + 24, by + 30, C.red);
+    const list = f.candidates || [];
+    if (!f.counts.on || !f.counts.off) {
+        rec.text('body', 'Take a snapshot with the logos ON, then one with them OFF.', L.x + 44, by + 60, C.dim);
+        rec.text('small', 'Two of each is better: whatever moves anyway (voltages, counters) drops out.', L.x + 44, by + 104, C.faint);
+        return;
+    }
+    rec.text('small', list.length + ' values follow the logos' + (list.length ? '. Pin the likeliest to watch it live.' : '. Try another pair of snapshots.'), L.x + 44, by + 30, list.length ? C.text : C.dim);
+    list.slice(0, 4).forEach((c, i) => {
+        const y = by + 52 + i * 62;
+        rec.rrect(L.x + 24, y, L.w - 48, 56, 14, C.tile);
+        rec.text('body', (UNIT[c.unit] || 'ECU') + '  0x' + hex4(c.did), L.x + 52, y + 40, c.unit !== 0x40 ? C.seat : C.text);
+        rec.text('small', 'ON ' + fit(rec, 'small', c.on, 260), L.x + 520, y + 37, C.green);
+        rec.text('small', 'OFF ' + fit(rec, 'small', c.off, 260), L.x + 860, y + 37, C.dim);
+        const pinned = (m.pins || []).indexOf(c.key) >= 0;
+        const px = L.x + L.w - 176, pw = 138, ph = 44, py = y + 6;
+        rec.rrect(px, py, pw, ph, ph / 2, pinned ? [C.green[0], C.green[1], C.green[2], 60] : C.card);
+        pinIcon(rec, px + 30, py + ph / 2 - 1, pinned);
+        rec.text('small', pinned ? 'Pinned' : 'Pin', px + 52, py + 31, pinned ? C.green : C.dim);
+        pinTarget({ key: c.key }, px - 10, y, pw + 20, 56);
+    });
+    if (list.length > 4) rec.text('small', '+ ' + (list.length - 4) + ' more in lightlog.txt', L.x + 44, L.y + L.h - 18, C.faint);
 }
 
 /* which target a point is on (logical px), or null */

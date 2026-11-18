@@ -10,6 +10,8 @@ const { Journal, change, line } = require('../src/journal.js');
 const screen = require('../src/screen_model.js');
 const { LogFile } = require('../src/log_file.js');
 const ui = require('../src/ui.js');
+const lamps = require('../src/lamps.js');
+const { Finder } = require('../src/finder.js');
 
 const ROOT = path.join(__dirname, '..');
 let n = 0;
@@ -37,7 +39,9 @@ ok(/Driver seat back \(LIN 1 #3, 0x1B\): on 100% rgb 255,255,255/.test(lin.descr
 assert.throws(() => uds.check(0x40, 0x2e, [0xda, 0x5e]), /read-only/); n++;
 assert.throws(() => uds.check(0x40, 0x31, [1, 2]), /read-only/); n++;
 assert.throws(() => uds.check(0xdf, 0x22, [0xf1, 0x50]), /one ECU/); n++;
-assert.throws(() => uds.check(0x40, 0x22, [0xda, 0x5f, 0x01]), /one identifier/); n++;
+assert.throws(() => uds.check(0x40, 0x22, [0xda, 0x5f, 0x01]), /identifiers/); n++;
+assert.throws(() => uds.check(0x40, 0x22, new Array(18).fill(1)), /identifiers/); n++;
+uds.check(0x40, 0x22, new Array(16).fill(1)); n++;
 uds.check(0x40, 0x22, [0xda, 0x5f]); n++;
 ok(uds.parseFrame({ udsResponse: [0, 0, 0x7f, 0, 0x21] }).reject === 0x21, 'transport rejection');
 ok(uds.parseFrame({ errorCode: 'TIMEOUT' }).error === 'TIMEOUT', 'transport error');
@@ -135,9 +139,9 @@ j.lights(1, lin.parseStatus(1, reply(1, [rec(0x01, 1, 1, 1, 10), rec(0x1c, 255, 
 const li = screen.lines('seat', j);
 ok(/^\[SEAT\] Passenger seat back/.test(li[0]) && /^\[UNKNOWN CODE\] Light 0x5A/.test(li[1]) && li[2] === '', 'seat view: seat and unknown lights only');
 ok(screen.lines('all', j).filter((x) => x).length === 4, 'all view: every module');
-ok(screen.nextView('seat') === 'log' && screen.nextView('log') === 'all' && screen.nextView('all') === 'seat', 'views cycle');
+ok(screen.nextView('seat') === 'log' && screen.nextView('log') === 'all' && screen.nextView('all') === 'find' && screen.nextView('find') === 'seat' && screen.nextDrawnView('all') === 'find' && screen.nextDrawnView('find') === 'seat', 'views cycle');
 const st = screen.status({ linkReady: true, buses: [{ modules: 2, on: 1 }, { modules: null, reads: 3 }], engine: true, kmh: 0, file: '/x/l.txt' });
-ok(/diagnostic link ready.*LIN 1: 2 modules, 1 on.*LIN 2: no answer yet.*engine running.*0 km\/h.*file \/x\/l.txt/.test(st), 'status line');
+ok(/diagnostic link ready.*LIN 1: 2 lights, 1 on.*LIN 2: no answer yet.*engine running.*0 km\/h.*file \/x\/l.txt/.test(st), 'status line');
 j.clear();
 ok(screen.lines('log', j)[0] === 'Nothing logged yet.', 'cleared');
 
@@ -164,7 +168,7 @@ ok(Array.from(k.pins).join() === '1:27,0:90', 'pins checked when loaded');
 const st2 = { linkReady: true, buses: [{ modules: 2, on: 1 }, { modules: 1, on: 1 }], engine: true, kmh: 12 };
 const drawn = ui.draw(new ui.Recorder(), screen.drawModel(k, st2, 'seat', 'llMark', null));
 const keys = drawn.targets.map((x) => x.key);
-['llMark', 'llRead', 'llView', 'llClear', 'pin:0:13'].forEach((x) => ok(keys.indexOf(x) >= 0, 'drawn: ' + x));
+['llMark', 'llRead', 'view:seat', 'view:all', 'view:find', 'llClear', 'pin:0:13'].forEach((x) => ok(keys.indexOf(x) >= 0, 'drawn: ' + x));
 ok(drawn.targets.every((x) => x.x >= 0 && x.y >= 0 && x.x + x.w <= ui.W && x.y + x.h <= ui.H), 'drawn: targets on screen');
 ok(drawn.rec.n > 100 && drawn.rec.atlases.length >= 2, 'drawn: ops and glyphs');
 ok(ui.hit(drawn.targets, drawn.targets[0].x + 2, drawn.targets[0].y + 2).key === drawn.targets[0].key, 'hit');
@@ -174,7 +178,71 @@ const r0 = new ui.Recorder();
 ok(ui.fit(r0, 'small', 'x'.repeat(400), 300).slice(-3) === '...' && r0.width('small', ui.fit(r0, 'small', 'x'.repeat(400), 300)) <= 300, 'fit');
 ok(ui.glow({ on: false }).join() === '44,48,58,255' && ui.glow({ on: true, bright: 100, r: 255, g: 0, b: 0, white: 0 })[0] === 255, 'glow');
 const emptyDrawn = ui.draw(new ui.Recorder(), screen.drawModel(new Journal(), { buses: [{}, {}] }, 'seat', null, null));
-ok(emptyDrawn.targets.length === 4, 'drawn before any answer: just the buttons');
+ok(emptyDrawn.targets.length === 6, 'drawn before any answer: just the buttons');
+
+/* ---- the BDC's lamp outputs ---- */
+const lampReply = [0x62, 0xe3, 0xb9, 0x00, 0x01, 0x64, 0x00];
+const lo = lamps.parse(lampReply, [0xe3, 0xb9]);
+ok(lo.length === 4 && !lo[0].on && lo[1].on && lo[2].raw === '64' && lo[3].bus === lamps.LAMPS, 'lamp outputs: a byte each');
+ok(lamps.parse(lampReply, [0x45, 0x00]) === null && lamps.parse([0x62, 0xe3, 0xb9], [0xe3, 0xb9]) === null, 'lamp outputs: only its own reply');
+t = Date.UTC(2026, 10, 18, 15, 0, 0);
+const jl = new Journal({ now: () => t });
+jl.lights(2, lo);
+ok(/BDC lamp outputs: 4 outputs, 2 on/.test(jl.events[0].text) && jl.relevant().length === 0, 'lamp outputs logged, none relevant by themselves');
+t += 10000; jl.lights(2, lamps.parse([0x62, 0xe3, 0xb9, 0x00, 0x00, 0x64, 0x00], [0xe3, 0xb9]));
+t += 3000; jl.mark();
+ok(jl.relevant().length === 1 && jl.relevant()[0].name === 'BDC lamp output 2' && jl.relevant()[0].reasons.join() === 'mark', 'lamp output off at the mark: relevant');
+ok(/^OFF: BDC lamp output 2: off \(00\)/.test(jl.events.filter((e) => e.kind === 'light').pop().text), 'lamp output event');
+jl.lights(2, lamps.parse([0x62, 0xe3, 0xb9, 0x00, 0x00, 0x32, 0x00], [0xe3, 0xb9]));
+ok(/^value 64 -> 32: BDC lamp output 3/.test(jl.events.filter((e) => e.kind === 'light').pop().text), 'lamp output value change');
+const vm = lamps.valueModule(0x6d, 0xd123, [0, 1], null, 1);
+ok(vm.key === 'd:6D:D123' && vm.on && vm.name === 'Seat module 0x6D 0xD123', 'a pinned value as a module');
+jl.setPins(['d:6D:D123', 'd:6d:d123']);
+ok(jl.pinnedValues().join() === 'd:6D:D123', 'value pins');
+jl.lights(3, [vm]);
+ok(jl.relevant()[0].key === 'd:6D:D123' && jl.relevant()[0].reasons[0] === 'pinned', 'pinned value first');
+ok(screen.lines('all', jl).some((x) => /BDC lamp output 3: on \(32\)/.test(x)), 'all view: lamp outputs');
+
+/* ---- the finder, against a fake car ---- */
+// the BDC has D100 (1 byte, follows the logos), D101 (2 bytes, moves anyway), D108 (1 byte, constant); seat module 0x6D
+// has 4001 (1 byte); 0x6E and 0x6F don't answer
+const car = { logos: true, tick: 0 };
+const values = { 0x40: { 0xd100: () => [car.logos ? 1 : 0], 0xd101: () => [car.tick++, 7], 0xd108: () => [9] }, 0x6d: { 0x4001: () => [3] } };
+const fakeUds = { read: (ecu, data) => {
+    const unit = values[ecu];
+    if (!unit) return Promise.resolve(null);
+    const out = [0x62];
+    for (let i = 0; i < data.length; i += 2) {
+        const d = (data[i] << 8) | data[i + 1];
+        if (d === 0xf150) return Promise.resolve([0x62, 0xf1, 0x50, 1]);
+        if (unit[d]) out.push(data[i], data[i + 1], ...unit[d]());
+    }
+    return Promise.resolve(out.length > 1 ? out : [0x7f, 0x22, 0x31]);
+} };
+let store = null;
+const fd = new Finder({ uds: fakeUds, log, gapMs: 0, store: { load: () => store, save: (o) => { store = JSON.parse(JSON.stringify(o)); } } });
+tests.push(() => fd.learn().then(() => {
+    const st = fd.state;
+    ok(st.units.map((u) => u.unit).join() === '64,109' && st.learnedAll, 'finder: BDC and seat module 0x6D answer');
+    ok(JSON.stringify(fd.known[0x40].dids) === '{"53504":1,"53505":2,"53512":1}' && fd.known[0x6d].dids[0x4001] === 1, 'finder: identifiers and lengths learned');
+    return fd.snapshot('on').then(() => fd.snapshot('on'));
+}).then(() => { car.logos = false; return fd.snapshot('off'); }).then(() => fd.snapshot('off')).then(() => {
+    const c = fd.candidates();
+    ok(c.length === 1 && c[0].key === 'd:40:D100' && c[0].on === '01' && c[0].off === '00', 'finder: only the value that follows the logos');
+    ok(new Finder({ uds: fakeUds, log, store: { load: () => store, save: () => {} } }).candidates().length === 1, 'finder: kept across restarts');
+    ok(/1 values follow the logos/.test(screen.findText(fd).join('|')) && /BDC 0xD100 {3}ON 01 {3}OFF 00/.test(screen.findText(fd).join('|')), 'find view text');
+    const dm = screen.drawModel(new Journal(), { buses: [{}, {}, {}, {}] }, 'find', null, null, fd);
+    const dr = ui.draw(new ui.Recorder(), dm);
+    ['llLearn', 'llSnapOn', 'llSnapOff', 'pin:d:40:D100'].forEach((x) => ok(dr.targets.some((tg) => tg.key === x), 'drawn find: ' + x));
+}));
+tests.push(() => {
+    // a unit whose reply doesn't add up by the learned lengths is read one by one
+    const odd = { read: (ecu, data) => Promise.resolve(data.length > 2 ? [0x62, 0xd1, 0x00, 1, 2, 3] : [0x62, data[0], data[1], 5]) };
+    const f2 = new Finder({ uds: odd, log, gapMs: 0 });
+    f2.units = [0x40]; f2.known = { 64: { dids: { 53504: 1, 53505: 1 }, next: 99999, done: true } };
+    return f2.snapshot('on').then((sn) => ok(sn.values['d:40:D100'] === '05' && sn.values['d:40:D101'] === '05', 'finder: one by one when the lengths don\'t add up'));
+});
+
 
 /* ---- the log file ---- */
 const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'lightlog-'));

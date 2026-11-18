@@ -9,11 +9,13 @@
  *            rejected by the transport (code in [4]), [6] = the address of the ECU that answered, the UDS reply
  *            from [9] on. 7F <sid> 78 = "response pending": the real reply comes later.
  *
- * READ ONLY: check() lets through ReadDataByIdentifier (22) to one ECU and nothing else, so this app cannot change
- * anything on the car. The SOME/IP side (link) is passed in: someip_link.js on the car, a fake in the tests.
+ * READ ONLY: check() lets through ReadDataByIdentifier (22) of one to MAX_DIDS identifiers to one ECU and nothing
+ * else, so this app cannot change anything on the car. The SOME/IP side (link) is passed in: someip_link.js on the car, a fake in the tests.
  *
  *   const uds = new Uds(link, log);  await uds.init();
  *   const reply = await uds.read(0x40, [0xDA, 0x5F]);   // 62 DA 5F ... | 7F 22 xx | null (no answer)
+ *   uds.read(0x40, [0xD1, 0x00, 0xD1, 0x01])            // several at once: 62 D1 00 <data> D1 01 <data>; the ECU
+ *                                                       // leaves out the ones it doesn't have (7F 22 31: none)
  */
 const EventEmitter = require('events');
 
@@ -21,6 +23,7 @@ const IFACE = 'com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu';
 const INSTANCE = 'SystemFunctionsInternalTasuInst1';
 const TESTER = 0xF2;
 const READ = 0x22;
+const MAX_DIDS = 8;
 
 function toBytes(b) {
     if (!b) return [];
@@ -36,7 +39,9 @@ function check(target, sid, data) {
     const byte = (x) => Number.isInteger(x) && x >= 0 && x <= 0xff;
     if (sid !== READ) throw new Error('read-only: service ' + sid + ' is not allowed');
     if (!byte(target) || target === 0xdf) throw new Error('read-only: one ECU only');
-    if (!Array.isArray(data) || data.length !== 2 || !data.every(byte)) throw new Error('read-only: one identifier only');
+    if (!Array.isArray(data) || data.length < 2 || data.length > 2 * MAX_DIDS || data.length % 2 || !data.every(byte)) {
+        throw new Error('read-only: 1 to ' + MAX_DIDS + ' identifiers');
+    }
 }
 
 /* a sendTasuResponse value -> { ecu, uds } | { reject: code } | { error } | null */
@@ -93,6 +98,8 @@ class Uds extends EventEmitter {
 
     _read(target, did, timeoutMs) {
         check(target, READ, did);
+        // a reply to several identifiers starts with the first one the ECU has
+        const asked = (a, b) => { for (let i = 0; i < did.length; i += 2) if (did[i] === a && did[i + 1] === b) return true; return false; };
         let timer, onFrame, onReject, finish, done = false;
         const got = new Promise((resolve) => {
             finish = (v) => {
@@ -109,7 +116,7 @@ class Uds extends EventEmitter {
                     clearTimeout(timer); timer = setTimeout(() => finish(null), timeoutMs);
                     return;
                 }
-                if (u[0] === READ + 0x40 && u[1] === did[0] && u[2] === did[1]) finish(u);
+                if (u[0] === READ + 0x40 && asked(u[1], u[2])) finish(u);
                 else if (u[0] === 0x7f && u[1] === READ) finish(u);
             };
             onReject = () => finish(null);
@@ -132,4 +139,4 @@ class Uds extends EventEmitter {
     }
 }
 
-module.exports = { Uds, IFACE, INSTANCE, check, parseFrame, verdictOf, toBytes };
+module.exports = { Uds, IFACE, INSTANCE, MAX_DIDS, check, parseFrame, verdictOf, toBytes };

@@ -24,7 +24,7 @@
       "path": "packages/lightlog/app",
       "build": "unit",
       "title": "Light Logger",
-      "description": "Logs the interior light modules (seat logos included), the engine and the speed, to find out what switches the seat logos off. Read only: changes nothing on the car. EXPERIMENTAL, untested on a car.",
+      "description": "Finds what switches the seat logos off: the RGB light modules, the body controller's lamp outputs, and a finder that compares everything the body controller and seat modules report with the logos on and off. Read only: changes nothing on the car. EXPERIMENTAL, untested on a car.",
       "uninstallable": true,
       "mguHmi": ["ID8"]
     }
