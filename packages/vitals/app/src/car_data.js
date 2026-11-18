@@ -52,6 +52,7 @@ class CarData extends EventEmitter {
                 this.emit('data', decode.engine(v));
             },
         }));
+        // basicDataSet is notify-only (no getter): subscribed, never read
         step(() => this._watch(IF_BASIC, '1', {
             basicDataSet: (v) => {
                 const raw = v && v.valueTemperatureTransmissionOil;
@@ -65,7 +66,7 @@ class CarData extends EventEmitter {
                 }
                 this.emit('data', { gearbox: decode.gearbox(v) });
             },
-        }));
+        }, 0, ['basicDataSet']));
         step(() => this._watch(IF_TPMS, '1', {
             statusTyreTemperature: (v) => { this.raw.tyreT = v; this._tyres(); },
             statusTyrePressure: (v) => { this.raw.tyreP = v; this._tyres(); },
@@ -88,8 +89,9 @@ class CarData extends EventEmitter {
         if (out.tyreT || out.tyreP) { this.available.tyres = true; this.emit('data', out); }
     }
 
-    /* one interface: subscribe to each field and read it now (and every pollMs, if given) */
-    _watch(iface, instance, handlers, pollMs) {
+    /* one interface: subscribe to each field and read it now (and every pollMs, if given), except the
+     * notify-only fields named in noRead */
+    _watch(iface, instance, handlers, pollMs, noRead) {
         let proxy;
         return someipBuilders.buildTypedProxy(iface, instance)
             .then((p) => { proxy = p; this.proxies[iface] = p; return proxy.init(); })
@@ -97,7 +99,7 @@ class CarData extends EventEmitter {
             .then(() => {
                 this.log.info(iface + ' available');
                 const fields = Object.keys(handlers);
-                const read = () => fields.forEach((f) => {
+                const read = () => fields.filter((f) => !noRead || noRead.indexOf(f) < 0).forEach((f) => {
                     const field = proxy[f];
                     if (!field || !field.getValue) return;
                     Promise.resolve(field.getValue()).then((v) => handlers[f](v))

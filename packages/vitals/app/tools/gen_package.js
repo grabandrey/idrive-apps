@@ -124,7 +124,7 @@ write('package.json', {
         latencyClass: 'FOREGROUND', loggingId: 'VTLS', userLoginRequired: false, backgroundPriority: 150,
         someipManifest: 'manifest.json',
     },
-    files: ['config', 'rhmiData', 'package.json', 'permissions.json', 'javascript', 'manifest.json', 'LICENSE'],
+    files: ['config', 'rhmiData', 'package.json', 'npm-shrinkwrap.json', 'permissions.json', 'javascript', 'manifest.json', 'LICENSE'],
     dependencies: { 'oap-sdk': '24.10.2' },
     engines: { node: '>=8.7.0' },
     author: 'Vitals',
@@ -151,12 +151,29 @@ write('manifest.json', {
         'de.bmw.infotainment.telematic.provisioning.Provisioning': { instances: '1', broadcasts: ['provisioningDataJSON'],
             methods: ['getValueJSON', 'setFilterForProvisioningData'] },
         'de.bmw.infotainment.certification.Certification': '*',
-        /* the car data the widget shows (car_data.js) */
+        /* iDrive 8's platform interfaces: MainApp-21's oap-sdk builds the app's screen, resources and entry
+         * point on these, and stops when they are missing from the app's someipInterfaces (as the Store's own
+         * app and idrive7-apps' kit list them) */
+        'de.bmw.infotainment.hmi.hmicontext2.HMIContext2': { instances: ['1'], attributes: { currentDisplayLanguage: 'rs' } },
+        'de.bmw.infotainment.hmi.entrypoint2.EntryPoint2': '*',
+        'de.bmw.infotainment.hmi.entrypoint2.EntryPointManager2': '*',
+        'de.bmw.infotainment.hmi.remote2.RemoteHmi2': '*',
+        'de.bmw.infotainment.hmi.remote2.RemoteHmiApplication2': '*',
+        'de.bmw.infotainment.hmi.resourcemanagement2.ResourceManager2': '*',
+        'de.bmw.infotainment.hmi.resourcemanagement2.ResourceBundle2': '*',
+        'de.bmw.infotainment.hmi.resourcemanagement2.StringBundle2': '*',
+        'de.bmw.infotainment.hmi.usecasemanagement.UseCaseContext': '*',
+        'de.bmw.infotainment.hmi.usecasemanagement.UseCaseInstance': '*',
+        'de.bmw.infotainment.hmi.usecasemanagement.UseCaseProvider': '*',
+        'de.bmw.infotainment.hmi.usecasemanagement.UseCaseRegistry': '*',
+        'de.bmw.infotainment.telematic.oap.PrivateEntryPoint2': instance(['genericMethod']),
+        /* the car data the widget shows (car_data.js). BMW's installer refuses the whole app for one field
+         * access the car's interface lacks: basicDataSet has no getter, so it is notify-only ("s") */
         'de.bmw.infotainment.vehicle.CDS': { instances: ['1'], attributes: { statusEngineTemperature: 'rs' } },
         'de.bmw.infotainment.vehicle.TPMS': { instances: ['1'], attributes: { statusTyreTemperature: 'rs', statusTyrePressure: 'rs' } },
         'de.bmw.infotainment.vehicle.Vehicle': { instances: ['1'], attributes: { statusNewCurrentUnitsStatusExt: 'rs' } },
-        'de.bmw.infrastructure.analytics.BasicDataSet': { instances: ['1'], attributes: { basicDataSet: 'rs' } },
-        'de.bmw.infotainment.personalization.SessionManager': { instances: '*', attributes: '*' },
+        'de.bmw.infrastructure.analytics.BasicDataSet': { instances: ['1'], attributes: { basicDataSet: 's' } },
+        'de.bmw.infotainment.personalization.SessionManager': '*',
     },
     services: { 'de.bmw.infotainment.telematic.oap.AppStatus': { instances: ['${userId}'] } },
 });
@@ -183,6 +200,9 @@ write('permissions.json', {
     }],
     mediatorRegistrationTable: [], ownerRegistrationTable: [], domainRoleTable: [],
 });
-write('config/base.json', {});
+/* newer oap-sdks (27.x donors) build the app's screen and entry point only with these on */
+write('config/base.json', { rhmiLoadingEnabled: true, entryPointLoadingEnabled: true });
+/* MainApp installs a package without node_modules/ through its shrinkwrap (nothing is fetched) */
+write('npm-shrinkwrap.json', { name: ID, version: VERSION, lockfileVersion: 1, requires: true, dependencies: {} });
 fs.copyFileSync(path.join(ROOT, '..', '..', '..', 'LICENSE'), path.join(PKG, 'LICENSE'));
 console.log('wrote ' + PKG);

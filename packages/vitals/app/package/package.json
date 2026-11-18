@@ -1,6 +1,6 @@
 {
   "name": "ida_vitals",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Water, engine oil, gearbox oil and tyre temperatures for the Vitals cluster widget, and its settings",
   "private": false,
   "main": "javascript/runner.js",
@@ -20,6 +20,7 @@
     "config",
     "rhmiData",
     "package.json",
+    "npm-shrinkwrap.json",
     "permissions.json",
     "javascript",
     "manifest.json",

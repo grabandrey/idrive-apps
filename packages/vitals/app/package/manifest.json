@@ -62,6 +62,33 @@
       ]
     },
     "de.bmw.infotainment.certification.Certification": "*",
+    "de.bmw.infotainment.hmi.hmicontext2.HMIContext2": {
+      "instances": [
+        "1"
+      ],
+      "attributes": {
+        "currentDisplayLanguage": "rs"
+      }
+    },
+    "de.bmw.infotainment.hmi.entrypoint2.EntryPoint2": "*",
+    "de.bmw.infotainment.hmi.entrypoint2.EntryPointManager2": "*",
+    "de.bmw.infotainment.hmi.remote2.RemoteHmi2": "*",
+    "de.bmw.infotainment.hmi.remote2.RemoteHmiApplication2": "*",
+    "de.bmw.infotainment.hmi.resourcemanagement2.ResourceManager2": "*",
+    "de.bmw.infotainment.hmi.resourcemanagement2.ResourceBundle2": "*",
+    "de.bmw.infotainment.hmi.resourcemanagement2.StringBundle2": "*",
+    "de.bmw.infotainment.hmi.usecasemanagement.UseCaseContext": "*",
+    "de.bmw.infotainment.hmi.usecasemanagement.UseCaseInstance": "*",
+    "de.bmw.infotainment.hmi.usecasemanagement.UseCaseProvider": "*",
+    "de.bmw.infotainment.hmi.usecasemanagement.UseCaseRegistry": "*",
+    "de.bmw.infotainment.telematic.oap.PrivateEntryPoint2": {
+      "instances": [
+        "${userId}"
+      ],
+      "methods": [
+        "genericMethod"
+      ]
+    },
     "de.bmw.infotainment.vehicle.CDS": {
       "instances": [
         "1"
@@ -92,13 +119,10 @@
         "1"
       ],
       "attributes": {
-        "basicDataSet": "rs"
+        "basicDataSet": "s"
       }
     },
-    "de.bmw.infotainment.personalization.SessionManager": {
-      "instances": "*",
-      "attributes": "*"
-    }
+    "de.bmw.infotainment.personalization.SessionManager": "*"
   },
   "services": {
     "de.bmw.infotainment.telematic.oap.AppStatus": {
