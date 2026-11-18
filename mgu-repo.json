@@ -17,6 +17,16 @@
       "requires": { "ida-vitals-cluster": "1.3.0" },
       "uninstallable": true,
       "mguHmi": ["ID8"]
+    },
+    {
+      "id": "ida_lightlog",
+      "kind": "app",
+      "path": "packages/lightlog/app",
+      "build": "unit",
+      "title": "Light Logger",
+      "description": "Logs the interior light modules (seat logos included), the engine and the speed, to find out what switches the seat logos off. Read only: changes nothing on the car. EXPERIMENTAL, untested on a car.",
+      "uninstallable": true,
+      "mguHmi": ["ID8"]
     }
   ]
 }

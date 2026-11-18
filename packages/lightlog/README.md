@@ -1,0 +1,90 @@
+# Light Logger: what switches the seat logos off
+
+An iDrive 8 app for **finding out** why the illuminated logos in the seats (G87 M2 headrests) go dark once the
+car is started. It watches the car's interior light modules and logs every change next to the engine and the
+car's speed. It changes nothing on the car.
+
+> **⚠️ Experimental: not yet tested on a car.** It follows the documented MGU Store format and reads the light
+> modules the way the MIT-licensed [idrive7-apps](https://github.com/cauliflowermossgrape/idrive7-apps) kit's Ambient
+> config app does (tested there on a G20). It passes desktop tests against stand-ins for BMW's SDK, but hasn't run on
+> a G87 yet. **The seat logos may not be on these buses at all.** Whether they are is what the log is for.
+
+## What it does
+
+- Every 4 s it reads both LIN buses of the body controller (BDC, `22 DA5F` and `22 E3D1`) through the head unit's
+  own diagnostic link (`InternalTasu`). That gives every ambient light module the BDC drives, each with its place,
+  colour, brightness and faults.
+- It follows the engine (`CDS.statusEngineSpeed2`) and the car's speed (`Vehicle2.statusCarSpeed2`).
+- Each change becomes an event: a module found, switched **ON** or **OFF**, dimmed or recoloured, or gone; the
+  engine running or off; the car moving or standing still. Lights in or on a seat (driver / passenger seat back,
+  and the second row's) are marked **SEAT** (`>>` on the screen).
+- **Mark this moment**: press it the second you see the logo go dark. A MARK line lands in the log, so you can
+  line it up with what the car did.
+
+**Read only.** The app sends nothing but `ReadDataByIdentifier` (22) to one control unit. `uds.js` refuses
+anything else before it reaches the car, and the tests check that no other module sends requests.
+
+## Install (MGU Store)
+
+1. In MGU Store, **Settings → Add source**, enter `grabandrey/idrive-apps`, branch `main` (skip if already added).
+2. Install **Light Logger** (`ida_lightlog`). It needs nothing else.
+3. Open **Light Logger** from the Apps menu. It logs while it runs.
+
+## How to use it on the G87
+
+1. Lock the car, wait a minute, unlock it and get in. Open Light Logger before you start the engine. The seat
+   logos should be lit (welcome light).
+2. Press **Show** to switch to *Light modules now*. Look for a line marked `[SEAT]` that is **on**. A light whose
+   place the table doesn't know is shown as `Light 0x..`. If one of those goes on and off with the logos, that's
+   them.
+3. Switch back to *Events*, start the engine, and drive off if that's when the logos go dark. Press **Mark this
+   moment** when they do.
+4. Read the events around the mark: which module went **OFF**, and right after what (engine running, moving, a
+   number of seconds after unlocking).
+
+What the answer means:
+
+| What the log shows | What it means |
+|---|---|
+| A `SEAT` (or `Light 0x..`) module goes OFF at the mark | The logos are BDC ambient light modules. An app could switch them on again over the same link, and that's the next step |
+| Nothing changes at the mark | The logos aren't on the BDC's LIN buses (wired to the seat or another unit). An iDrive app can't reach them this way. Coding or wiring is the route |
+| `the body controller refuses the read` / `stopped answering` | This car's BDC doesn't offer these reads (or another app holds the link). The log says which |
+
+## Where the log goes
+
+- On the screen: the newest 40 events (or every module now, with its raw bytes).
+- A text file, `lightlog.txt`, in the first writable folder of the app's home, its working folder and the temp
+  folder. The status line shows the path. It is restarted (the old one kept as `.1`) past 1 MB.
+- The app's log (`LTLG`), each line starting `LIGHT`, plus each bus's raw reply whenever it changes.
+
+## Good to know
+
+- Don't run it together with an ambient light app that writes these modules (Ambient config, IterioDev's
+  Comfort). The diagnostic link takes one request at a time, and their colours would show up as changes here.
+- The BDC answers each read after a second or two (`7F 22 78`, then the reply), so a change shows up within about
+  5–10 s, not instantly.
+- The location names come from the BDC_G05 description through the idrive7-apps kit. The G87's may differ.
+
+## Package layout
+
+```
+app/                         the app (source package, id ida_lightlog, built on the head unit)
+  mgu-app.json               id, version, modules, the oap-sdk modules it uses
+  src/ida_lightlog.js        the app: polling, the screen, the log
+  src/uds.js                 the diagnostic link (read only)
+  src/lin.js                 the BDC's light module records -> modules
+  src/journal.js             reads and car data -> events
+  src/screen_model.js        the screen's rows
+  src/someip_link.js         BMW's typed SOME/IP proxies
+  src/log_file.js            the text file
+  package/                   the staged package tree (generated by tools/gen_package.js)
+  tools/test_lightlog.js     tests: records, the read-only link, the journal, the screen, the manifest
+```
+
+`node packages/lightlog/app/tools/gen_package.js` after changing the screen, the manifest or the version.
+
+## Credits
+
+The diagnostic link's request format, the BDC's light module identifiers and their location names follow the
+MIT-licensed [idrive7-apps](https://github.com/cauliflowermossgrape/idrive7-apps) kit (`kit/runtime/diag.js`,
+`apps/ambient_config/lin.js`). Not affiliated with BMW. MIT licensed.
