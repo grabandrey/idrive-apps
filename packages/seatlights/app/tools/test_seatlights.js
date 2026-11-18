@@ -94,7 +94,7 @@ tests.push(() => {
         bdc.letGo = true; bdc.log = [];
         return wait(90);
     }).then(() => {
-        ok(!bdc.letGo && s.holding && bdc.log.indexOf('2F E3 B5 03 00 2C 01') >= 0, 'the car lets go: taken back (the renewal, or the check)');
+        ok(!bdc.letGo && s.holding && bdc.log.indexOf('2F E3 B5 03 00 2C 01') >= 0, 'the car lets go: the next renewal takes it back');
         // the session lost: asked again
         bdc.dropSession = true; bdc.log = [];
         return wait(20).then(() => { bdc.dropSession = false; return wait(80); });
@@ -127,15 +127,17 @@ tests.push(() => {
     }));
 });
 tests.push(() => {
-    // renewing too slowly for the car's limit: each lapse is caught and logged with how long it held
+    // a renewal refused (the session lost): logged with how long it held, the car's state, the last renewal; asked again
     const bdc = fakeBdc(1);
-    bdc.expireMs = 40;
     const notes = [];
-    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], refreshMs: 500 }).then(({ s }) => {
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9] }).then(({ s }) => {
         s.on('change', () => notes.push(s.note));
-        return s.setOn(true).then(() => wait(200)).then(() => {
-            ok(/Went off after \d+(\.\d)? s held: asking again/.test(notes.join('|')) && bdc.log.filter((x) => /^2F E3 B5 03/.test(x)).length >= 2,
-                'a lapse: logged with how long it held, asked again');
+        return s.setOn(true).then(() => wait(40)).then(() => {
+            bdc.dropSession = true;
+            return wait(10).then(() => { bdc.dropSession = false; return wait(80); });
+        }).then(() => {
+            ok(/Renewal refused: .* held \(engine running, lock \?, last renewal [\d.]+ s before\): asking again/.test(notes.join('|')) && s.holding && bdc.held === 44,
+                'a refused renewal: logged with its context, held again');
             return s.stop();
         });
     });
@@ -143,16 +145,24 @@ tests.push(() => {
 tests.push(() => {
     // the switch as before (held with the engine off too), bypassed only while locked with the engine off
     const bdc = fakeBdc(1);
-    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], carOff: true }).then(({ s, saves }) => s.setOn(true).then(() => {
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], carOff: true, lockSettleMs: 50 }).then(({ s, saves }) => s.setOn(true).then(() => {
         ok(s.holding && bdc.held === 44, 'ON, nothing known of the car: held (as before)');
         s.car({ engine: false, locked: false });
         return wait(40);
     }).then(() => {
         ok(s.holding && bdc.held === 44, 'engine off, unlocked: still held');
+        // a passing "parked" (getting out, the car still unlocked): no blink
+        s.car({ locked: true });
+        return wait(20).then(() => { s.car({ locked: false }); return wait(80); });
+    }).then(() => {
+        ok(s.holding && bdc.held === 44 && bdc.offSeen === 0 && !bdc.log.some((x) => /^10 01/.test(x)), 'a passing "parked": never let go, no blink');
         s.car({ locked: true });
         return wait(40);
     }).then(() => {
-        ok(!s.holding && bdc.held === null && bdc.session === 1 && s.state.on && s.state.bypassed, 'locked, engine off: handed back, the switch stays ON');
+        ok(s.holding, 'locked, but not for lockSettleMs yet: still held');
+        return wait(60);
+    }).then(() => {
+        ok(!s.holding && bdc.held === null && bdc.session === 1 && s.state.on && s.state.bypassed, 'locked a while, engine off: handed back, the switch stays ON');
         ok(/off while the car is locked/.test(s.note) && saves[saves.length - 1].on === true, 'says so, ON kept');
         bdc.log = [];
         return wait(60);
@@ -167,13 +177,32 @@ tests.push(() => {
     }).then(() => {
         ok(s.holding, 'locked with the engine running (remote start, locked while running): still held');
         s.car({ engine: false });
-        return wait(40);
+        return wait(60);
     }).then(() => {
         ok(!s.holding && bdc.held === null, 'then the engine off, still locked: handed back');
         s.car({ locked: null });
         return wait(40);
     }).then(() => {
         ok(s.holding, 'the car\'s state no longer known: the switch decides (held)');
+        return s.stop();
+    }));
+});
+tests.push(() => {
+    // a check's read that the body controller answers slowly never holds up the renewals
+    const bdc = fakeBdc(1);
+    bdc.expireMs = 60;
+    const slow = bdc.answer;
+    bdc.answer = (req) => {
+        const r = slow(req);
+        if (req.serviceID === 0x22) return [{ ecu: 0x40, uds: [0x7f, 0x22, 0x78] }].concat(r);      // pending first
+        return r;
+    };
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], checkMs: 20, refreshMs: 15 }).then(({ s }) => s.setOn(true).then(() => wait(400)).then(() => {
+        ok(s.holding && bdc.offSeen === 0, 'slow reads: the renewals still in time, never off');
+        bdc.log = [];
+        return wait(100);
+    }).then(() => {
+        ok(!bdc.log.some((x) => /^22/.test(x)) && bdc.log.filter((x) => /^2F/.test(x)).length >= 3, 'while held: renewals only, no reads');
         return s.stop();
     }));
 });

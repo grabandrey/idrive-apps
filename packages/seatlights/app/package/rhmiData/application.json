@@ -5,7 +5,7 @@
     "type": "OnlineApp",
     "name": "ida_seatlights",
     "vendor": "SeatLights",
-    "version": "1.3.1",
+    "version": "1.3.2",
     "defaultLanguage": "en_GB",
     "uiDescriptions": [
       {

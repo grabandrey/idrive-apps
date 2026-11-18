@@ -27,7 +27,7 @@ stay lit with them. One output feeds both, so the app can't light one without th
 | | |
 |---|---|
 | switch ON | held: engine running or not, doors open or not |
-| the car locked (parked, nobody in it) **and** the engine off | handed back: the car switches the logos (and the handle lights) off |
+| the car locked (parked, nobody in it) for 10 s **and** the engine off | handed back: the car switches the logos (and the handle lights) off. A "parked" that passes within 10 s (getting out, still unlocked) changes nothing |
 | unlocked again, or the engine running | held again |
 | the car never says whether it's locked | the switch alone decides |
 
@@ -49,7 +49,7 @@ MIT-licensed [idrive7-apps](https://github.com/cauliflowermossgrape/idrive7-apps
 | the lamp outputs, to check | `22 E3B9` (`22 4500` on older BDCs) |
 | the extended diagnostic session | `10 03` |
 | hold output 45 on | `2F E3B5 <layout, on>` (`2F 4501 …` on older BDCs) |
-| renew the hold (and the session), every 2.5 s | `2F E3B5 <layout, on>` again |
+| renew the hold (and the session), every second | `2F E3B5 <layout, on>` again |
 | hand it back (OFF, the app stopping), then the default session | `2F E3B5 <layout, back>`, `10 01` |
 
 The G87 answered the kit's layout (`03 2C 01`) with "bad length", so the first time the switch goes ON the app
@@ -63,9 +63,11 @@ with no other output switching on:
 | 3, a trailing byte | `03 2C 01 00` | `00 2C 00 00` |
 | 4, a 2-byte state | `03 2C 00 01` | `00 2C 00 00` |
 
-**Why the renewal:** the body controller ends a hold by itself after about 10 seconds (on the G87 the logos went
-dark, then lit again when the app asked again). Asking for the same hold every 2.5 seconds renews it before it
-runs out, and keeps the diagnostic session open too.
+**Why the renewal, every second:** the body controller ends a hold by itself: after about 10 seconds with the
+engine running, sooner with the car off (renewed every 2.5 seconds, the logos still blinked off for a second with the
+car off and unlocked). Asking for the same hold every second renews it before it runs out, and keeps the diagnostic
+session open too. While the logos are held the app reads nothing: a read waiting for the body controller's answer
+would hold up the renewals behind it.
 
 It only searches with the logos dark. If they're lit (before the engine starts), it waits. The layout is saved
 and used directly from then on.
@@ -75,8 +77,7 @@ controller only. Anything else is refused before it reaches the car.
 
 | Situation | What the app does |
 |---|---|
-| output 45 reads OFF while ON (checked every 2 s) | asks again at once, and logs how long the hold had lasted |
-| a renewal is refused (the session lost) | opens the session and asks again |
+| a renewal is refused (the session lost) | opens the session and asks again at once, and logs how long the hold had lasted, the car's state and when the last renewal went through |
 | 5 refusals in a row | gives up: the switch goes OFF and the screen says what the body controller answered |
 | switched OFF | hands the output back and ends the session |
 | locked with the engine off (above), or the app stopping | hands it back; the switch stays ON |
