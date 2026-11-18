@@ -21,7 +21,7 @@ APP_OUT = os.path.join(ROOT, "packages", "vitals", "app", "src", "ui_font.js")
 
 STYLES = {
     # name: (file, px)
-    "value": ("Barlow-Medium.ttf", 35),    # the bars' readouts, in line with the bar: capitals as tall as it
+    "value": ("Barlow-Medium.ttf", 48),    # the bars' readouts, in line with the bar: capitals as tall as it
     "unit": ("Barlow-Regular.ttf", 23),    # degree units
     "label": ("Barlow-Medium.ttf", 19),    # WATER, ENGINE OIL, TYRES (spaced capitals)
     "tyre": ("Barlow-Regular.ttf", 54),    # tyre temperatures

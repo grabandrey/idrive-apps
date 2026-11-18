@@ -14,14 +14,14 @@
         W: 632, H: 572,
         /* the bars: label above on the left, the bar under it (a segment per 10 C, 2 x hh tall, slanted by `slant`
          * degrees), its value in line with it on the right, as tall as the bar (baseline valueDy under its middle) */
-        bar: { x0: 40, x1: 472, dy: 26, hh: 12, step: 10, slant: 24, gap: 4, valueX: 552, unitX: 558, valueDy: 12 },
+        bar: { x0: 40, x1: 446, dy: 26, hh: 17, step: 10, slant: 24, gap: 5, valueX: 556, unitX: 562, valueDy: 17 },
         gauges: [
-            { key: 'coolant', label: 'WATER', y: 50, min: 40, max: 140 },
-            { key: 'oil', label: 'ENGINE OIL', y: 118, min: 40, max: 160 },
-            { key: 'gearbox', label: 'GEARBOX OIL', y: 186, min: 40, max: 140 },
+            { key: 'coolant', label: 'WATER', y: 42, min: 40, max: 140 },
+            { key: 'oil', label: 'ENGINE OIL', y: 116, min: 40, max: 160 },
+            { key: 'gearbox', label: 'GEARBOX OIL', y: 190, min: 40, max: 140 },
         ],
-        divider: { y: 236, x0: 40, x1: 592 },
-        tyreHead: { y: 266 },
+        divider: { y: 250, x0: 40, x1: 592 },
+        tyreHead: { y: 280 },
         /* the tyres: centres dx either side of cx, a front and a rear row; half size, corner radius */
         tyre: { cx: 316, dx: 66, yFront: 352, yRear: 466, hw: 18, hh: 42, r: 9 },
         /* the text beside a tyre: gap px from the tyre's outer edge; temperature and pressure baselines */
