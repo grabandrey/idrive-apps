@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vitals Widget Preview</title>
+<style>
+  :root{--bg:#050506;--text:#e9e9ec;--muted:#8a8a93;--line:#26262c}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:16px}
+  .still{padding:0}
+  canvas{display:block;width:min(632px,100%);height:auto;aspect-ratio:632/572;background:#000}
+  .still canvas{width:632px}
+  .row{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  button{background:#141418;color:var(--text);border:1px solid var(--line);padding:8px 14px;cursor:pointer;font-weight:600}
+  button.on{background:#1c69d4;border-color:#1c69d4}
+  #err{color:#ff6a5a;white-space:pre-wrap;font-family:monospace}
+  p{color:var(--muted);max-width:632px}
+</style>
+</head>
+<body>
+<canvas id="c" width="632" height="572"></canvas>
+<div class="row" id="ui">
+  <button data-a="blue" class="on">BLUE</button><button data-a="lightblue">LIGHT BLUE</button><button data-a="white">WHITE</button>
+  <button id="units">°C / BAR</button><button id="press">PRESSURES</button><button id="bg">BACKDROP</button>
+</div>
+<p id="note">Renders with the car's own code: packages/vitals/tool: layout.js, view.js, text.js, font.js and shader.js (WebGL 1 / GLSL ES 1.00). The data is the built-in demo: a warm-up, then a hot lap.</p>
+<div id="err"></div>
+<script src="../tool/layout.js"></script>
+<script src="../tool/view.js"></script>
+<script src="../tool/text.js"></script>
+<script src="../tool/font.js"></script>
+<script src="../tool/shader.js"></script>
+<script>
+const q = new URLSearchParams(location.search);
+const still = q.has('still');
+if (still) { document.body.className = 'still'; document.getElementById('ui').remove(); document.getElementById('note').remove(); }
+const L = VITALS_LAYOUT, V = VITALS_VIEW;
+const S = { tempUnit: 'auto', pressUnit: 'auto', coolantWarn: 115, oilWarn: 135, accent: q.get('accent') || 'blue',
+  pressures: true, backdrop: true, demo: true };
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl', { premultipliedAlpha: false, preserveDrawingBuffer: true });
+const VS = 'attribute vec2 a; varying vec2 v_uv; void main(){ v_uv = vec2(a.x*0.5+0.5, 0.5-a.y*0.5); gl_Position = vec4(a,0.0,1.0); }';
+function sh(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+let ok = true;
+try {
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, VITALS_SHADER.build()));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+} catch (e) { ok = false; document.getElementById('err').textContent = 'SHADER ERROR\n' + e.message; document.title = 'SHADER ERROR'; }
+
+/* fixed states for screenshots: ?still&state=warm|cold|hot|nodata */
+function stillData(state, now) {
+  const base = { carTemp: 'C', carPress: 'BAR', engineAt: now, tyresAt: now };
+  if (state === 'nodata') return {};
+  if (state === 'cold') return Object.assign(base, { coolant: 52, oil: 41, tyreT: { FL: 9, FR: 10, RL: 8, RR: 9 }, tyreP: { FL: 2.2, FR: 2.2, RL: 2.4, RR: 2.4 } });
+  if (state === 'hot') return Object.assign(base, { coolant: 112, oil: 141, tyreT: { FL: 97, FR: 88, RL: 79, RR: 72 }, tyreP: { FL: 2.8, FR: 2.7, RL: 2.9, RR: 2.9 } });
+  return Object.assign(base, { coolant: 92, oil: 104, tyreT: { FL: 41, FR: 43, RL: 37, RR: 38 }, tyreP: { FL: 2.4, FR: 2.4, RL: 2.6, RR: 2.6 } });
+}
+
+if (ok) {
+  document.title = 'SHADER OK';
+  gl.useProgram(prog);
+  const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  const tex = {};
+  const canvases = { V: new VITALS_TEXT.TextCanvas(L.W, L.H, VITALS_FONT), L: new VITALS_TEXT.TextCanvas(L.W, L.H, VITALS_FONT) };
+  ['V', 'L'].forEach((k, i) => {
+    tex[k] = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tex[k]);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.uniform1i(gl.getUniformLocation(prog, 'u_tex' + k), i);
+  });
+  document.querySelectorAll('[data-a]').forEach(x => x.onclick = () => { S.accent = x.dataset.a; document.querySelectorAll('[data-a]').forEach(y => y.classList.toggle('on', y === x)); });
+  const ub = document.getElementById('units'); if (ub) ub.onclick = () => {
+    const f = S.tempUnit !== 'F'; S.tempUnit = f ? 'F' : 'C'; S.pressUnit = f ? 'psi' : 'bar'; ub.textContent = f ? '°F / PSI' : '°C / BAR'; };
+  const pb = document.getElementById('press'); if (pb) pb.onclick = () => { S.pressures = !S.pressures; };
+  const bb = document.getElementById('bg'); if (bb) bb.onclick = () => { S.backdrop = !S.backdrop; };
+  if (still) { S.demo = false; S.tempUnit = q.get('t') || 'auto'; S.pressUnit = q.get('p') || 'auto'; }
+
+  function frame(now) {
+    const view = V.compose(S, still ? stillData(q.get('state') || 'warm', now) : null, now);
+    ['V', 'L'].forEach((k, i) => {
+      const rects = canvases[k].apply(view.fields.filter(f => f.tex === k));
+      gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tex[k]);
+      if (!tex[k].ready) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, L.W, L.H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, canvases[k].px); tex[k].ready = true; }
+      else rects.forEach(r => gl.texSubImage2D(gl.TEXTURE_2D, 0, r.x, r.y, r.w, r.h, gl.LUMINANCE, gl.UNSIGNED_BYTE, canvases[k].pack([r])));
+    });
+    gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    Object.keys(view.uniforms).forEach(n => {
+      const v = view.uniforms[n], l = gl.getUniformLocation(prog, n);
+      if (!l) return;
+      [null, gl.uniform1fv, gl.uniform2fv, gl.uniform3fv, gl.uniform4fv][v.length].call(gl, l, v);
+    });
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    if (!still) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>

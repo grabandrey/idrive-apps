@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "id": "ida_vitals",
+  "version": "1.0.0",
+  "tree": "package",
+  "modules": [
+    "src/ida_vitals.js",
+    "src/ctl_client.js",
+    "src/car_data.js",
+    "src/decode.js",
+    "src/settings_model.js"
+  ],
+  "sdk": [
+    "oap-sdk/src/core/OnlineApp.js",
+    "oap-sdk/src/logging/logging",
+    "oap-sdk/src/someip/someipBuilders"
+  ]
+}

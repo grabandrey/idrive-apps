@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "components": [
+    {
+      "id": "ida-vitals-cluster",
+      "kind": "tool",
+      "path": "packages/vitals/tool",
+      "mguHmi": ["ID8"]
+    },
+    {
+      "id": "ida_vitals",
+      "kind": "app",
+      "path": "packages/vitals/app",
+      "build": "unit",
+      "title": "Vitals",
+      "description": "Coolant, oil and tyre temperatures in the iDrive 8 cluster: reads the car's data for the Vitals widget and holds its settings.",
+      "requires": { "ida-vitals-cluster": "1.0.0" },
+      "uninstallable": true,
+      "mguHmi": ["ID8"]
+    }
+  ]
+}
