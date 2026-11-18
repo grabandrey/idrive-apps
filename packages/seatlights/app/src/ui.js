@@ -213,7 +213,7 @@ function badge(rec, cx, cy, lit) {
 }
 
 /*
- * model: { on (the switch), holding (the BDC took it), carOn, note, warn, output, layout, focus, pressed }
+ * model: { on (the switch), holding (the BDC took it), bypassed (locked, engine off), note, warn, output, layout, focus, pressed }
  * Returns { rec, targets: [{ key, x, y, w, h }] }.
  */
 function draw(rec, m) {
@@ -228,10 +228,10 @@ function draw(rec, m) {
 
     const tx = K.x + 720;
     rec.text('head', 'SEAT LIGHTS', tx, K.y + 120, C.faint, 'left', 4);
-    rec.text('title', !m.on ? 'OFF' : m.holding ? 'ON' : m.carOn === false ? 'ON  ·  WAITING' : 'ON ...', tx, K.y + 230, m.on ? C.text : C.dim);
+    rec.text('title', !m.on ? 'OFF' : m.holding ? 'ON' : m.bypassed ? 'ON  ·  LOCKED' : 'ON ...', tx, K.y + 230, m.on ? C.text : C.dim);
     const note = m.note === 'On' || m.note === 'Off' ? (m.holding ? 'The logos are held on' : '') : m.note || '';
     rec.text('body', fit(rec, 'body', note, 1000), tx, K.y + 330, m.warn ? C.orange : m.holding ? C.green : C.dim);
-    rec.text('small', 'Keeps the headrest logos lit while the car is on. Off with the car, back on at the next start.', tx, K.y + 400, C.faint);
+    rec.text('small', 'Keeps the headrest logos lit until you switch it off. Off while the car is locked.', tx, K.y + 400, C.faint);
 
     // the switch
     const sw = 300, sh = 140, sx = K.x + K.w - 90 - sw, sy = K.y + 110, r = sh / 2;

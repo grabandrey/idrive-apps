@@ -1,8 +1,8 @@
 'use strict';
 /*
  * Seat Lights: an iDrive 8 app with one switch. ON keeps the seat (headrest) logos lit, with no timer, until it is
- * switched OFF (seat_light.js: the body controller's lamp output 45 held on), with the car on: from the engine's
- * start until it has been off for 30 s or the head unit powers down. Then the car switches them off as it locks. The switch is kept, and the app starts
+ * switched OFF (seat_light.js: the body controller's lamp output 45 held on). The one exception: while the car is
+ * locked with the engine off, the car has them (and switches them off); unlocked, they are held again. The switch is kept, and the app starts
  * with the head unit (package.json mguAppStartType autostart), so with it ON the logos come on by themselves each drive.
  *
  * Its screen: drawn by the head unit's renderer (ui.js, gpu.js) when MGU Store's Renderer is installed (touch, or the
@@ -31,6 +31,19 @@ const ID8_AREA = { x: 0, y: 76, w: 2880, h: 764 };
 const VALUE_KEY = 0;
 const FOREGROUND_REASONS = ['ENTRY_POINT', 'LUM', 'BOOKMARK', 'START_WIDGET', 'TRIGGER_HMI', 'SPEECH_COMMAND'];
 const isTrue = (v) => v === true || v === 1 || v === 'true' || v === '1';
+
+/* VehicleCondition.statusConditionVehicle: names or wire numbers -> 1..12 (1-3 parked: locked, nobody in it; 5 living;
+ * 7 ignition; 8 starting; 10 driving; 12 ending), or the partial networks it keeps awake when the state isn't sent */
+const CONDITIONS = { PARKEN_BN_NIO: 1, PARKEN_BN_IO: 2, STANDFUNKTIONEN_KUNDE_NICHT_IM_FZG: 3, WOHNEN: 5,
+    PRUEFEN_ANALYSE_DIAGNOSE: 7, FAHRBEREITSCHAFT_HERSTELLEN: 8, FAHREN: 10, FAHRBEREITSCHAFT_BEENDEN: 12 };
+function number(x) { const n = typeof x === 'number' ? x : CONDITIONS[x]; return n >= 1 && n <= 12 ? n : undefined; }
+function conditionOf(v) {
+    const n = number(v && v.statusConditionVehicle);
+    if (n !== undefined) return n;
+    const p = v && v.controlBasePartialNetworks;
+    if (p === 0 || p === 'KEINE_KOMMUNIKATION') return 1;
+    return number(typeof p === 'string' ? p.replace(/^KOM_/, '') : p);
+}
 
 function within(p, ms, what) {
     let timer;
@@ -129,8 +142,9 @@ class SeatLightsApp extends OnlineApp {
         });
     }
 
-    /* the engine (CDS.statusEngineSpeed2: rpm x 4, 65535 none) and the head unit's power state: the logos are held
-     * only with the car on (seat_light.js car()) */
+    /* the engine (CDS.statusEngineSpeed2: rpm x 4, 65535 none) and whether the car is locked (VehicleCondition: BMW's
+     * vehicle state, parked = 1-3 means locked and left, as the MIT-licensed idrive7-apps kit reads it): locked with
+     * the engine off bypasses the switch (seat_light.js car()) */
     _watchCar() {
         if (this._watching) return;
         this._watching = true;
@@ -141,14 +155,17 @@ class SeatLightsApp extends OnlineApp {
             if (rpm >= 400) this._light.car({ engine: true });
             else if (rpm <= 50) this._light.car({ engine: false });
         };
-        const power = (v) => {
-            if (v === undefined || v === null) return;
-            this._light.car({ power: typeof v === 'object' ? JSON.stringify(v) : String(v) });
+        const seen = [];
+        const condition = (v) => {
+            const n = conditionOf(v);
+            const raw = JSON.stringify(v && v.statusConditionVehicle !== undefined ? v.statusConditionVehicle : v && v.controlBasePartialNetworks);
+            if (seen.length < 16 && seen.indexOf(raw) < 0) { seen.push(raw); logger.info('vehicle state ' + raw + (n === undefined ? ' (not known)' : ' = ' + n)); }
+            this._light.car({ locked: n === undefined ? null : n <= 3 });
         };
         this._link.open('de.bmw.infotainment.vehicle.CDS', '1', { fields: { statusEngineSpeed2: engine } })
             .catch(() => null)
-            .then(() => this._link.open('de.bmw.infotainment.lifecycle.lifecycle.Lifecycle', 'Front', { fields: { powerStateDetailed: power } }))
-            .catch(() => logger.info('head unit power state not available; the engine alone decides'));
+            .then(() => this._link.open('de.bmw.infrastructure.VehicleCondition', '1', { fields: { VehicleCondition: condition } }))
+            .catch(() => logger.info('vehicle state not available: the switch is never bypassed'));
     }
 
     _toggle() {
@@ -171,7 +188,7 @@ class SeatLightsApp extends OnlineApp {
     _model() {
         const st = this._light.state;
         const on = this._uds.ready ? st.on : this._wantOn;
-        return { on: on, holding: st.holding, carOn: st.carOn, note: this._uds.ready ? st.note : 'Waiting for the diagnostic link', warn: st.warn,
+        return { on: on, holding: st.holding, bypassed: st.bypassed, note: this._uds.ready ? st.note : 'Waiting for the diagnostic link', warn: st.warn,
             output: st.output, layout: st.layout, focus: this._ui.focus, pressed: this._ui.pressed };
     }
 
@@ -262,7 +279,7 @@ class SeatLightsApp extends OnlineApp {
         const m = this._model();
         this._set(STATUS, 'Text', m.note + '  |  lamp output ' + m.output + (m.layout !== null && m.layout !== undefined ? ', layout ' + (m.layout + 1) : ''));
         this._set(SWITCH, 'PrimaryText', 'Seat lights');
-        this._set(SWITCH, 'FrequencyText', m.on ? (m.holding ? 'ON' : m.carOn === false ? 'ON (waiting for the car)' : 'ON (starting)') : 'OFF');
+        this._set(SWITCH, 'FrequencyText', m.on ? (m.holding ? 'ON' : m.bypassed ? 'ON (off while locked)' : 'ON (starting)') : 'OFF');
         this._set(SWITCH, 'FrequencyVisible', true);
         Promise.resolve(this.rhmiApplication.flush && this.rhmiApplication.flush()).catch(() => { /* next render */ });
     }

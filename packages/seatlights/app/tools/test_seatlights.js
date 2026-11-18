@@ -141,50 +141,39 @@ tests.push(() => {
     });
 });
 tests.push(() => {
-    // the car off and locked: handed back; held again at the next start
+    // the switch as before (held with the engine off too), bypassed only while locked with the engine off
     const bdc = fakeBdc(1);
-    let clock = 1e6;
-    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], carOff: true, engineOffMs: 1000, now: () => clock }).then(({ s, saves }) => s.setOn(true).then(() => {
-        ok(s.state.on && !s.holding && !bdc.log.some((x) => /^(2F|10)/.test(x)) && /waiting for the car/.test(s.note), 'ON before the engine starts: nothing held (the car lights them itself)');
-        s.car({ engine: false });                                       // the first reading: off (the car parked)
-        return wait(60);
-    }).then(() => {
-        ok(!s.holding && !bdc.log.some((x) => /^(2F|10)/.test(x)), 'the engine off from the start: nothing held (no start-stop grace)');
-        s.car({ engine: true });
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], carOff: true }).then(({ s, saves }) => s.setOn(true).then(() => {
+        ok(s.holding && bdc.held === 44, 'ON, nothing known of the car: held (as before)');
+        s.car({ engine: false, locked: false });
         return wait(40);
     }).then(() => {
-        ok(s.holding && bdc.held === 44, 'engine running: held');
-        // auto start-stop: a short stop keeps it
-        s.car({ engine: false }); clock += 500; s.car({ engine: false });
+        ok(s.holding && bdc.held === 44, 'engine off, unlocked: still held');
+        s.car({ locked: true });
         return wait(40);
     }).then(() => {
-        ok(s.holding && bdc.held === 44, 'a short engine stop (start-stop): still held');
-        clock += 600;                                                   // off for longer than engineOffMs
-        return wait(60);
-    }).then(() => {
-        ok(!s.holding && bdc.held === null && bdc.session === 1 && s.state.on, 'engine off a while: handed back, the switch stays ON');
-        ok(/back on when you start the car/.test(s.note) && saves[saves.length - 1].on === true, 'says so, ON kept');
+        ok(!s.holding && bdc.held === null && bdc.session === 1 && s.state.on && s.state.bypassed, 'locked, engine off: handed back, the switch stays ON');
+        ok(/off while the car is locked/.test(s.note) && saves[saves.length - 1].on === true, 'says so, ON kept');
         bdc.log = [];
         return wait(60);
     }).then(() => {
-        ok(!bdc.log.length, 'the car off: nothing sent, not even reads');
-        s.car({ engine: true });
+        ok(!bdc.log.length, 'locked: nothing sent, not even reads');
+        s.car({ locked: false });
         return wait(40);
     }).then(() => {
-        ok(s.holding && bdc.held === 44, 'the next start: held again');
-        // the head unit powering down with the engine off: let go at once
-        s.car({ engine: false }); s.car({ power: 'STANDBY' });
+        ok(s.holding && bdc.held === 44 && !s.state.bypassed, 'unlocked: held again');
+        s.car({ engine: true, locked: true });
         return wait(40);
     }).then(() => {
-        ok(!s.holding && bdc.held === null && bdc.session === 1, 'head unit powering down, engine off: handed back at once');
-        s.car({ power: 'ON' }); s.car({ engine: true });
+        ok(s.holding, 'locked with the engine running (remote start, locked while running): still held');
+        s.car({ engine: false });
         return wait(40);
     }).then(() => {
-        ok(s.holding, 'on again');
-        s.car({ power: 'STANDBY' });
+        ok(!s.holding && bdc.held === null, 'then the engine off, still locked: handed back');
+        s.car({ locked: null });
         return wait(40);
     }).then(() => {
-        ok(s.holding, 'a power state with the engine running never lets go');
+        ok(s.holding, 'the car\'s state no longer known: the switch decides (held)');
         return s.stop();
     }));
 });
@@ -252,8 +241,8 @@ app.modules.forEach((m) => {
 const man = JSON.parse(fs.readFileSync(path.join(ROOT, 'package', 'manifest.json'), 'utf8')).proxies;
 const tasu = man['com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu'];
 ok(tasu && tasu.methods.join() === 'sendTasuRequest' && tasu.broadcasts.join() === 'sendTasuResponse', 'manifest: the diagnostic link');
-ok(man['de.bmw.infotainment.vehicle.CDS'].attributes.statusEngineSpeed2 === 'rs' && man['de.bmw.infotainment.lifecycle.lifecycle.Lifecycle'].attributes.powerStateDetailed === 'rs'
-    && !man['de.bmw.infotainment.vehicle.Vehicle2'], 'manifest: the engine and the power state, nothing else of the car');
+ok(man['de.bmw.infotainment.vehicle.CDS'].attributes.statusEngineSpeed2 === 'rs' && man['de.bmw.infrastructure.VehicleCondition'].attributes.VehicleCondition === 's'
+    && !man['de.bmw.infotainment.lifecycle.lifecycle.Lifecycle'] && !man['de.bmw.infotainment.vehicle.Vehicle2'], 'manifest: the engine and the vehicle state (notify only), nothing else of the car');
 const pj = JSON.parse(fs.readFileSync(path.join(ROOT, 'package', 'package.json'), 'utf8'));
 ok(pj.mguAppStartType === 'autostart' && pj.name === 'ida_seatlights', 'starts with the head unit');
 const uiDesc = JSON.parse(fs.readFileSync(path.join(ROOT, 'package/rhmiData/uiDescriptions/ID8/uiDescription.json'), 'utf8'));

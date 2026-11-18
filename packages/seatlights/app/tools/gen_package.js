@@ -161,10 +161,10 @@ write('manifest.json', {
         /* the head unit's diagnostic link to the body controller (uds.js allows reads, and the lamp output 45 hold) */
         'com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu': { instances: ['SystemFunctionsInternalTasuInst1'],
             methods: ['sendTasuRequest'], broadcasts: ['sendTasuResponse'] },
-        /* the car on or off: the engine (as Light Logger reads it on the G87) and the head unit's power state (as every
-         * app of the MIT-licensed idrive7-apps kit declares it, iDrive 8 included) */
+        /* locked with the engine off bypasses the switch: the engine (as Light Logger reads it on the G87) and the vehicle
+         * state (notify only, "s", as the MIT-licensed idrive7-apps kit's Live Adjustments requires it on iDrive 8) */
         'de.bmw.infotainment.vehicle.CDS': { instances: ['1'], attributes: { statusEngineSpeed2: 'rs' } },
-        'de.bmw.infotainment.lifecycle.lifecycle.Lifecycle': { instances: ['Front'], attributes: { powerStateDetailed: 'rs' } },
+        'de.bmw.infrastructure.VehicleCondition': { instances: ['1'], attributes: { VehicleCondition: 's' } },
         'de.bmw.infotainment.personalization.SessionManager': '*',
     },
     services: { 'de.bmw.infotainment.telematic.oap.AppStatus': { instances: ['${userId}'] } },

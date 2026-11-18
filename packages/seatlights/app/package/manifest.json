@@ -108,12 +108,12 @@
         "statusEngineSpeed2": "rs"
       }
     },
-    "de.bmw.infotainment.lifecycle.lifecycle.Lifecycle": {
+    "de.bmw.infrastructure.VehicleCondition": {
       "instances": [
-        "Front"
+        "1"
       ],
       "attributes": {
-        "powerStateDetailed": "rs"
+        "VehicleCondition": "s"
       }
     },
     "de.bmw.infotainment.personalization.SessionManager": "*"

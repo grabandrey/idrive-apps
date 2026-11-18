@@ -1,8 +1,8 @@
 # Seat Lights: keep the seat logos on
 
-An iDrive 8 app with one switch. **ON** keeps the illuminated logos in the seats' headrests lit **while the car is
-on**, with no timer, until you switch it **OFF**. When the car is turned off and locked, they go off with it, and
-come back on at the next start. Made for the G87 M2, whose logos go dark once the car is started.
+An iDrive 8 app with one switch. **ON** keeps the illuminated logos in the seats' headrests lit, with no timer,
+until you switch it **OFF**. The one exception: while the car is **locked with the engine off**, they go off with
+it, and come back on when it's unlocked. Made for the G87 M2, whose logos go dark once the car is started.
 
 On the G87 the exterior door handle lights hang on the same body controller output as the seat logos, so they
 stay lit with them. One output feeds both, so the app can't light one without the other.
@@ -20,20 +20,20 @@ stay lit with them. One output feeds both, so the app can't light one without th
 2. **The first time,** start the engine (so the logos are dark), open Seat Lights and switch it **ON**. It finds
    the record layout your body controller takes, saves it, and the logos light up.
 3. That's it. The switch is kept: with it ON, the app starts with the head unit and the logos come on by themselves
-   as soon as the engine runs, every drive. Switch it **OFF** to give the logos back to the car.
+   every time the car is unlocked. Switch it **OFF** to give the logos back to the car.
 
-### With the car on, only
+### Off while locked
 
 | | |
 |---|---|
-| before the engine starts | nothing held: the car lights the logos itself (its welcome light) |
-| engine running | held |
-| engine stopped (auto start-stop at the lights) | still held for 30 s; a longer stop lets go, and it holds again when the engine restarts |
-| engine off for 30 s, or the head unit powering down with the engine off | handed back: the car switches the logos (and the handle lights) off as it locks |
-| the next start | held again |
+| switch ON | held: engine running or not, doors open or not |
+| the car locked (parked, nobody in it) **and** the engine off | handed back: the car switches the logos (and the handle lights) off |
+| unlocked again, or the engine running | held again |
+| the car never says whether it's locked | the switch alone decides |
 
-The engine comes from `CDS.statusEngineSpeed2` (the same signal Light Logger reads on the G87), the head unit's power
-state from `Lifecycle.powerStateDetailed`. Both are logged when they change.
+Locked comes from `VehicleCondition` (BMW's vehicle state: parked = locked and left, as the MIT-licensed idrive7-apps
+kit reads it), the engine from `CDS.statusEngineSpeed2` (the same signal Light Logger reads on the G87). The values
+the car sends are logged (`vehicle state …`, `seat lights: car locked / not locked`, `engine running / off`).
 
 If you use Light Logger too, switch its **Keep on** off. Both would hold the same output through the same
 diagnostic session.
@@ -79,7 +79,7 @@ controller only. Anything else is refused before it reaches the car.
 | a renewal is refused (the session lost) | opens the session and asks again |
 | 5 refusals in a row | gives up: the switch goes OFF and the screen says what the body controller answered |
 | switched OFF | hands the output back and ends the session |
-| the car off (above), or the app stopping | hands it back; the switch stays ON for the next drive |
+| locked with the engine off (above), or the app stopping | hands it back; the switch stays ON |
 | the app crashing | nothing more is sent: the body controller ends the session after a few seconds and takes the output back by itself |
 
 The body controller stays in a diagnostic session for as long as the switch is ON. If anything behaves oddly
