@@ -106,8 +106,8 @@
         var B = L.bar;
         L.gauges.forEach(function (g) {
             field(g.key + '.label', 'L', 'label', B.x0, g.y, 'left', g.label, 2.2);
-            field(g.key + '.value', 'V', 'value', B.valueX, g.y + 2, 'right', fmtTemp(vals[g.key], tu));
-            field(g.key + '.unit', 'L', 'unit', B.unitX, g.y + 2, 'left', '°' + tu);
+            field(g.key + '.value', 'V', 'value', B.valueX, g.y + B.dy + B.valueDy, 'right', fmtTemp(vals[g.key], tu));
+            field(g.key + '.unit', 'L', 'unit', B.unitX, g.y + B.dy + B.valueDy, 'left', '°' + tu);
         });
         field('tyres.head', 'L', 'label', L.divider.x0, L.tyreHead.y, 'left', 'TYRES', 2.2);
         var T = L.tyre, TT = L.tyreText;

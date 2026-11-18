@@ -29,7 +29,7 @@ const shader = require('./shader.js');
 const FONT = require('./font.js');
 const { TextCanvas } = require('./text.js');
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const CLIENT = process.env.CLUSTER_RENDER_CLIENT || '/var/opt/cluster-render/current/cluster_render_client.js';
 const DATA_DIR = process.env.VITALS_DATA || '/var/opt/ida-vitals-cluster';
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');

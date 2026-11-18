@@ -236,3 +236,17 @@ server.listen(sockPath, () => {
     }, 50));
     gpu.connect();
 });
+
+/* ---- gearbox diagnostics for the screen ---- */
+{
+    const c = new CarData(quiet);
+    assert.ok(/not set up/.test(c.gearboxText()));
+    c.diag.BasicDataSet = { state: 'waiting for the car', updates: 0, at: 0, error: null };
+    assert.ok(/waiting for the car, 0 updates/.test(c.gearboxText()));
+    c.diag.BasicDataSet.updates = 3;
+    c._gearbox({ somethingElse: 1 });
+    assert.ok(/without a gearbox oil value/.test(c.gearboxText()), c.gearboxText());
+    c._gearbox({ valueTemperatureTransmissionOil: 255 });
+    assert.ok(/raw 255 \(= no value\)/.test(c.gearboxText()), c.gearboxText());
+    console.log('  gearbox diagnostics: ok');
+}

@@ -248,9 +248,9 @@ class Vitals extends OnlineApp {
         if (!gpu || !gpu.ready || !gpu.visible) return;
         const m = {
             settings: this._reply && this._reply.settings, status: this._reply && this._reply.status, connected: this._connected,
-            data: this._last || {}, rows: model.ROWS, focus: u.focus, pressed: u.pressed,
+            data: this._last || {}, rows: model.ROWS, focus: u.focus, pressed: u.pressed, gearboxInfo: this._car.gearboxText(),
         };
-        const key = JSON.stringify([m.settings, m.status, m.connected, m.data, m.focus, m.pressed]);
+        const key = JSON.stringify([m.settings, m.status, m.connected, m.data, m.focus, m.pressed, m.gearboxInfo]);
         const now = Date.now();
         if (gpu.waiting && now - gpu.sentAt < 1000) return;
         if (key === u.key && now - gpu.sentAt < 1000) return;
@@ -305,7 +305,9 @@ class Vitals extends OnlineApp {
 
     _render() {
         if (!this.rhmiApplication || !this._state) return;
-        this._set(STATUS, 'Text', model.statusText(this._reply, this._connected, this._car.available), 'Text');
+        const st = this._reply && this._reply.status;
+        const gearbox = st && !st.gearbox && !(this._reply.settings && this._reply.settings.demo) ? '  |  ' + this._car.gearboxText() : '';
+        this._set(STATUS, 'Text', model.statusText(this._reply, this._connected, this._car.available) + gearbox, 'Text');
         const s = this._reply && this._reply.settings;
         model.ROWS.forEach((row) => {
             this._set(row.name, 'PrimaryText', row.label, 'Text');

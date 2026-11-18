@@ -159,6 +159,22 @@ function tyreColour(c) {
     return C.red;
 }
 
+/* a tyre seen from above: dark rubber faintly tinted by its temperature, a centre groove and V sipes */
+function tyreIcon(rec, x, y, w, h, t) {
+    const tint = tyreColour(t), amt = num(t) ? 0.22 : 0;
+    const mix = (a, b, k) => [0, 1, 2].map((i) => Math.round(a[i] * (1 - k) + b[i] * k)).concat(255);
+    const rubber = mix([20, 21, 24], tint, amt);
+    rec.rrect(x, y, w, h, 9, mix([70, 72, 78], tint, amt * 1.6));
+    rec.rrect(x + 1.5, y + 1.5, w - 3, h - 3, 8, rubber);
+    rec.rrect(x + 5, y + 2, w - 10, h - 4, 6, mix(rubber, [255, 255, 255], 0.06));
+    const groove = mix(rubber, [0, 0, 0], 0.6), cx = x + w / 2;
+    rec.rect(cx - 1.5, y + 4, 3, h - 8, groove);
+    for (let yy = y + 8; yy < y + h - 8; yy += 9) {
+        rec.quad([[x + 4, yy], [cx - 3, yy + 5], [cx - 3, yy + 7], [x + 4, yy + 2]], groove);
+        rec.quad([[cx + 3, yy + 5], [x + w - 4, yy], [x + w - 4, yy + 2], [cx + 3, yy + 7]], groove);
+    }
+}
+
 const GAUGES = [
     { key: 'coolant', label: 'WATER', min: 40, max: 140, warn: 'coolantWarn', live: 'engine' },
     { key: 'oil', label: 'ENGINE OIL', min: 40, max: 160, warn: 'oilWarn', live: 'engine' },
@@ -173,7 +189,7 @@ const TILES = [
 ];
 
 /*
- * model: { settings, status (the service's), connected, data (car data: coolant, oil, gearbox, tyreT, tyreP,
+ * model: { settings, status (the service's), connected, gearboxInfo (what the car sends for it), data (car data: coolant, oil, gearbox, tyreT, tyreP,
  *          carTemp, carPress), rows (settings_model ROWS), focus (a row name), pressed (a row name) }
  * Returns { rec, targets: [{ key, x, y, w, h }] }.
  */
@@ -227,18 +243,20 @@ function draw(rec, m) {
     rec.rrect(L.x, L.y, L.w, L.h, 28, C.card);
     rec.text('head', 'LIVE', L.x + 44, L.y + 58, C.faint, 'left', 4);
     GAUGES.forEach((g, i) => {
-        const y = L.y + 128 + i * 116;
+        const y = L.y + 116 + i * 116;
         const v = st[g.live] || (s && s.demo) ? d[g.key] : null;
+        if (g.key === 'gearbox' && !num(v) && m.gearboxInfo) rec.text('small', m.gearboxInfo, L.x + 330, y, C.faint);
         const warnAt = s ? s[g.warn] : null;
         const hot = num(v) && num(warnAt) && v >= warnAt;
         rec.text('head', g.label, L.x + 44, y, C.dim, 'left', 3);
+        // the bar: forward-slanted segments, 10 degrees each; its value in line with it, as tall as it
+        const by = y + 18, bh = 40, segs = (g.max - g.min) / 10;
         const unitW = rec.width('body', '°' + tu);
         const vx = L.x + L.w - 44 - unitW - 10;
-        rec.text('mid', fmtT(v, tu), vx, y + 6, hot ? C.red : C.text, 'right');
-        rec.text('body', '°' + tu, vx + 10, y + 6, C.dim);
-        // the bar: forward-slanted segments, 10 degrees each
-        const bx0 = L.x + 44, bx1 = L.x + L.w - 44, by = y + 26, bh = 16, segs = (g.max - g.min) / 10;
-        const sw = (bx1 - bx0) / segs, slant = 8, gap = 5;
+        rec.text('mid', fmtT(v, tu), vx, by + bh, hot ? C.red : C.text, 'right');
+        rec.text('body', '°' + tu, vx + 10, by + bh, C.dim);
+        const bx0 = L.x + 44, bx1 = vx - 130;
+        const sw = (bx1 - bx0) / segs, slant = 14, gap = 7;
         const fill = num(v) ? Math.max(0, Math.min(1, (v - g.min) / (g.max - g.min))) * segs : 0;
         for (let k = 0; k < segs; k++) {
             const x0 = bx0 + k * sw, x1 = x0 + sw - gap;
@@ -255,7 +273,7 @@ function draw(rec, m) {
     ['FL', 'FR', 'RL', 'RR'].forEach((k, i) => {
         const x = L.x + 44 + i * ((L.w - 88) / 4);
         const t = st.tyres && d.tyreT ? d.tyreT[k] : null, p = st.tyres && d.tyreP ? d.tyreP[k] : null;
-        rec.rrect(x, ty + 6, 22, 84, 8, tyreColour(t));
+        tyreIcon(rec, x, ty + 4, 30, 88, t);
         rec.text('small', k, x + 40, ty + 30, C.faint, 'left', 2);
         const tw = rec.text('mid', fmtT(t, tu), x + 40, ty + 84, C.text);
         rec.text('body', '°' + tu, x + 48 + tw, ty + 84, C.dim);

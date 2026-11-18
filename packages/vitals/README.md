@@ -66,7 +66,8 @@ last 3 minutes, because the tyre sensors report slowly and, on some cars, only w
 (on some cars only when it changes), so it stays on screen as long as the engine data is live. It shows as soon as
 the first plausible value arrives. Some cars never fill it in and send one fixed number: when it hasn't moved once
 while the engine oil warmed by 25 °C, the app takes it for that and shows dashes. The raw values are in the app's
-log (`VTLS`, "gearbox oil raw").
+log (`VTLS`, "gearbox oil raw"), and while it shows no value the app's screen says what the car sends for it
+(the data set's state, how many updates came, the last raw value).
 
 ## Settings (the Vitals app)
 

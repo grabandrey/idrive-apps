@@ -12,8 +12,9 @@
 (function (root) {
     var L = {
         W: 632, H: 572,
-        /* the bars: label left, value right, the bar under them (a segment per 10 C), slanted by `slant` degrees */
-        bar: { x0: 40, x1: 592, dy: 18, hh: 7, step: 10, slant: 24, gap: 3, valueX: 540, unitX: 547 },
+        /* the bars: label above on the left, the bar under it (a segment per 10 C, 2 x hh tall, slanted by `slant`
+         * degrees), its value in line with it on the right, as tall as the bar (baseline valueDy under its middle) */
+        bar: { x0: 40, x1: 472, dy: 26, hh: 12, step: 10, slant: 24, gap: 4, valueX: 552, unitX: 558, valueDy: 12 },
         gauges: [
             { key: 'coolant', label: 'WATER', y: 50, min: 40, max: 140 },
             { key: 'oil', label: 'ENGINE OIL', y: 118, min: 40, max: 160 },
@@ -22,7 +23,7 @@
         divider: { y: 236, x0: 40, x1: 592 },
         tyreHead: { y: 266 },
         /* the tyres: centres dx either side of cx, a front and a rear row; half size, corner radius */
-        tyre: { cx: 316, dx: 64, yFront: 350, yRear: 462, hw: 14, hh: 36, r: 6 },
+        tyre: { cx: 316, dx: 66, yFront: 352, yRear: 466, hw: 18, hh: 42, r: 9 },
         /* the text beside a tyre: gap px from the tyre's outer edge; temperature and pressure baselines */
         tyreText: { gap: 22, dyT: 2, dyP: 42 },
     };
