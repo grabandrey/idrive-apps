@@ -2,8 +2,12 @@
 /*
  * Light Logger: what the screen shows. Pure, tested on a desktop by tools/test_lightlog.js.
  *
- * The screen is the head unit's own list: a status line, four buttons, then LINES rows of text, either the newest
- * events first ('events') or every light module now, the seat ones first ('lights').
+ * Without MGU Store's renderer the screen is the head unit's own list: a status line, four buttons, then LINES rows
+ * of text in one of three views (Show steps through them):
+ *   'seat'  the lights that may be the seat logos now (journal.relevant()), each with why
+ *   'log'   the newest events first, only the seat lights', the car's, the marks and the link's
+ *   'all'   every light module now
+ * (ui.js draws the same with the renderer.)
  */
 const lin = require('./lin.js');
 const { line } = require('./journal.js');
@@ -32,22 +36,50 @@ function status(s) {
     return parts.join('  |  ');
 }
 
-function viewLabel(view) { return view === 'lights' ? 'Light modules now' : 'Events, newest first'; }
-function nextView(view) { return view === 'lights' ? 'events' : 'lights'; }
+const VIEWS = ['seat', 'log', 'all'];
+const VIEW_LABELS = { seat: 'Seat lights now', log: 'Seat light log', all: 'All lights now' };
+const REASONS = { pinned: 'PINNED', seat: 'SEAT', mark: 'CHANGED AT MARK', unknown: 'UNKNOWN CODE' };
+
+function viewLabel(view) { return VIEW_LABELS[view] || VIEW_LABELS.seat; }
+function nextView(view) { return VIEWS[(VIEWS.indexOf(view) + 1) % VIEWS.length]; }
+function tags(m) { return (m.reasons || []).map((r) => REASONS[r]).join(', '); }
+
+/* what the seat view says when no light qualifies */
+function noSeatText(journal) {
+    const all = journal.modules();
+    if (!all.length) return ['No answer from the body controller yet.'];
+    return [
+        'No seat light so far.',
+        'The body controller has ' + all.length + ' light modules: none in a seat, none with an unknown code.',
+        'Press Mark this moment when the logos go dark: any light that changes then shows up here.',
+        'If none does, the logos are not on these light buses (see All for every light).',
+    ];
+}
 
 /* the LINES rows' texts */
 function lines(view, journal) {
     let out;
-    if (view === 'lights') {
-        const mods = journal.modules().slice().sort((a, b) => (b.seat - a.seat) || (a.bus - b.bus) || (a.nad - b.nad));
-        out = mods.map((m) => (m.seat ? '[SEAT] ' : '') + lin.describe(m) + '  [' + m.raw + ']');
+    if (view === 'all') {
+        out = journal.modules().map((m) => lin.describe(m) + '  [' + m.raw + ']');
         if (!out.length) out = ['No answer from the body controller yet.'];
-    } else {
-        out = journal.events.slice().reverse().map((e) => (e.seat ? '>> ' : '') + line(e));
+    } else if (view === 'log') {
+        out = journal.events.filter((e) => journal.isRelevant(e)).reverse().map((e) => (e.seat ? '>> ' : '') + line(e));
         if (!out.length) out = ['Nothing logged yet.'];
+    } else {
+        out = journal.relevant().map((m) => '[' + tags(m) + '] ' + lin.describe(m) + '  [' + m.raw + ']');
+        if (!out.length) out = noSeatText(journal);
     }
     while (out.length < LINES) out.push('');
     return out.slice(0, LINES);
 }
 
-module.exports = { LINES, BUTTONS, LINE_IDS, status, lines, viewLabel, nextView };
+/* what ui.js draws: the left card is the seat lights, or all of them ('all'); the right one the seat light log */
+function drawModel(journal, st, view, focus, pressed) {
+    return {
+        status: st, view: view === 'all' ? 'all' : 'seat', seat: journal.relevant(), all: journal.modules(),
+        noSeat: noSeatText(journal), log: journal.events.filter((e) => journal.isRelevant(e)).reverse().slice(0, 20),
+        pins: Array.from(journal.pins), marks: journal.marks, focus: focus, pressed: pressed,
+    };
+}
+
+module.exports = { drawModel, LINES, BUTTONS, LINE_IDS, VIEWS, REASONS, status, lines, viewLabel, nextView, tags, noSeatText };

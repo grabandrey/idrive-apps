@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "id": "ida_lightlog",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "tree": "package",
   "modules": [
     "src/ida_lightlog.js",
@@ -10,7 +10,10 @@
     "src/lin.js",
     "src/journal.js",
     "src/log_file.js",
-    "src/screen_model.js"
+    "src/screen_model.js",
+    "src/gpu.js",
+    "src/ui.js",
+    "src/ui_font.js"
   ],
   "sdk": [
     "oap-sdk/src/core/OnlineApp.js",

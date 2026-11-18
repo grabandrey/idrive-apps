@@ -9,6 +9,7 @@ const uds = require('../src/uds.js');
 const { Journal, change, line } = require('../src/journal.js');
 const screen = require('../src/screen_model.js');
 const { LogFile } = require('../src/log_file.js');
+const ui = require('../src/ui.js');
 
 const ROOT = path.join(__dirname, '..');
 let n = 0;
@@ -126,17 +127,54 @@ ok(/^brightness/.test(change(a, Object.assign({}, a, { bright: 60 }))), 'brightn
 ok(change(a, Object.assign({}, a, { r: 200 })) === 'colour', 'colour change');
 ok(/^\d\d:\d\d:\d\d {2}MARK {3}MARK 1/.test(line(j.events[j.events.length - 1])), 'line format');
 
-/* ---- the screen ---- */
-const ev = screen.lines('events', j);
-ok(ev.length === screen.LINES && /MARK 1/.test(ev[0]), 'newest first, LINES rows');
-j.lights(1, lin.parseStatus(1, reply(1, [rec(0x01, 1, 1, 1, 10), rec(0x1c, 255, 255, 255, 90)])));
-const li = screen.lines('lights', j);
-ok(/^\[SEAT\] Passenger seat back/.test(li[0]) && li[3] === '', 'seat lights first');
-ok(screen.nextView('events') === 'lights' && screen.nextView('lights') === 'events', 'view toggles');
+/* ---- the screen: only what may be the seat logos ---- */
+const ev = screen.lines('log', j);
+ok(ev.length === screen.LINES && /MARK 1/.test(ev[0]), 'log: newest first, LINES rows');
+ok(ev.some((x) => /OFF: Driver seat back/.test(x)) && !ev.some((x) => /Driver front door line/.test(x)), 'log: seat lights, not the door line');
+j.lights(1, lin.parseStatus(1, reply(1, [rec(0x01, 1, 1, 1, 10), rec(0x1c, 255, 255, 255, 90), rec(0x5a, 255, 255, 255, 100)])));
+const li = screen.lines('seat', j);
+ok(/^\[SEAT\] Passenger seat back/.test(li[0]) && /^\[UNKNOWN CODE\] Light 0x5A/.test(li[1]) && li[2] === '', 'seat view: seat and unknown lights only');
+ok(screen.lines('all', j).filter((x) => x).length === 4, 'all view: every module');
+ok(screen.nextView('seat') === 'log' && screen.nextView('log') === 'all' && screen.nextView('all') === 'seat', 'views cycle');
 const st = screen.status({ linkReady: true, buses: [{ modules: 2, on: 1 }, { modules: null, reads: 3 }], engine: true, kmh: 0, file: '/x/l.txt' });
 ok(/diagnostic link ready.*LIN 1: 2 modules, 1 on.*LIN 2: no answer yet.*engine running.*0 km\/h.*file \/x\/l.txt/.test(st), 'status line');
 j.clear();
-ok(screen.lines('events', j)[0] === 'Nothing logged yet.', 'cleared');
+ok(screen.lines('log', j)[0] === 'Nothing logged yet.', 'cleared');
+
+/* ---- relevance: changed at a mark, pinned, none ---- */
+t = Date.UTC(2026, 10, 18, 13, 0, 0);
+const k = new Journal({ now: () => t });
+const door = (bright, logo) => lin.parseStatus(0, reply(0, [rec(0x05, 0, 120, 254, bright), rec(0x0d, 255, 255, 255, logo)]));
+k.lights(0, door(70, 100));
+ok(k.relevant().length === 0 && /No seat light so far/.test(screen.lines('seat', k)[0]), 'known non-seat lights: nothing relevant, and it says why');
+t += 30000; k.lights(0, door(70, 0));                 // the "logo" behind a known code goes off ...
+t += 40000; k.mark();                                 // ... long before the mark: not it
+ok(k.relevant().length === 0, 'a change 40 s before the mark is not at the mark');
+t += 5000; k.lights(0, door(70, 100));                // on again 5 s after a mark
+ok(k.relevant().length === 1 && k.relevant()[0].loc === 0x0d && k.relevant()[0].reasons.join() === 'mark', 'changed at a mark');
+ok(k.isRelevant(k.events[k.events.length - 1]) && !k.isRelevant({ key: '0:5', seat: false }), 'log filter follows relevance');
+ok(k.togglePin('0:5') && k.relevant()[0].key === '0:5' && k.relevant()[0].reasons[0] === 'pinned', 'pinned first');
+ok(/pinned Driver front door line \(LIN 1, 0x05\)/.test(k.events[k.events.length - 1].text), 'pin logged by name');
+let saved = null; k.on('pins', (x) => { saved = x; });
+ok(!k.togglePin('0:5') && saved && saved.length === 0, 'unpin, saved');
+k.setPins(['1:27', 'junk', '0:90']);
+ok(Array.from(k.pins).join() === '1:27,0:90', 'pins checked when loaded');
+
+/* ---- the drawn screen ---- */
+const st2 = { linkReady: true, buses: [{ modules: 2, on: 1 }, { modules: 1, on: 1 }], engine: true, kmh: 12 };
+const drawn = ui.draw(new ui.Recorder(), screen.drawModel(k, st2, 'seat', 'llMark', null));
+const keys = drawn.targets.map((x) => x.key);
+['llMark', 'llRead', 'llView', 'llClear', 'pin:0:13'].forEach((x) => ok(keys.indexOf(x) >= 0, 'drawn: ' + x));
+ok(drawn.targets.every((x) => x.x >= 0 && x.y >= 0 && x.x + x.w <= ui.W && x.y + x.h <= ui.H), 'drawn: targets on screen');
+ok(drawn.rec.n > 100 && drawn.rec.atlases.length >= 2, 'drawn: ops and glyphs');
+ok(ui.hit(drawn.targets, drawn.targets[0].x + 2, drawn.targets[0].y + 2).key === drawn.targets[0].key, 'hit');
+const allDrawn = ui.draw(new ui.Recorder(), screen.drawModel(k, st2, 'all', null, null));
+ok(allDrawn.targets.filter((x) => /^pin:/.test(x.key)).length === 2, 'drawn all: a pin per light');
+const r0 = new ui.Recorder();
+ok(ui.fit(r0, 'small', 'x'.repeat(400), 300).slice(-3) === '...' && r0.width('small', ui.fit(r0, 'small', 'x'.repeat(400), 300)) <= 300, 'fit');
+ok(ui.glow({ on: false }).join() === '44,48,58,255' && ui.glow({ on: true, bright: 100, r: 255, g: 0, b: 0, white: 0 })[0] === 255, 'glow');
+const emptyDrawn = ui.draw(new ui.Recorder(), screen.drawModel(new Journal(), { buses: [{}, {}] }, 'seat', null, null));
+ok(emptyDrawn.targets.length === 4, 'drawn before any answer: just the buttons');
 
 /* ---- the log file ---- */
 const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'lightlog-'));
@@ -161,10 +199,12 @@ const man = JSON.parse(fs.readFileSync(path.join(ROOT, 'package', 'manifest.json
 const tasu = man['com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu'];
 ok(tasu && tasu.methods.join() === 'sendTasuRequest' && tasu.broadcasts.join() === 'sendTasuResponse', 'manifest: the diagnostic link');
 ok(man['de.bmw.infotainment.vehicle.CDS'].attributes.statusEngineSpeed2 === 'rs' && man['de.bmw.infotainment.vehicle.Vehicle2'].attributes.statusCarSpeed2 === 'rs', 'manifest: engine and speed');
-const ui = JSON.parse(fs.readFileSync(path.join(ROOT, 'package/rhmiData/uiDescriptions/ID8/uiDescription.json'), 'utf8'));
-const names = Object.keys(ui.containers[1].components).map((k) => ui.containers[1].components[k].name);
+const ui2 = JSON.parse(fs.readFileSync(path.join(ROOT, 'package/rhmiData/uiDescriptions/ID8/uiDescription.json'), 'utf8'));
+const names = Object.keys(ui2.containers[1].components).map((x) => ui2.containers[1].components[x].name);
 ['llStatus', 'llMark', 'llRead', 'llView', 'llClear', 'llLine0', 'llLine' + (screen.LINES - 1)].forEach((x) => ok(names.indexOf(x) >= 0, 'screen has ' + x));
-ok(ui.containers[1].name === 'ST_OnlineApps_LightLog', 'state name the app looks for');
+ok(ui2.containers[1].name === 'ST_OnlineApps_LightLog', 'state name the app looks for');
+const pj = JSON.parse(fs.readFileSync(path.join(ROOT, 'package', 'package.json'), 'utf8'));
+ok(pj.mguAppStartType === 'autostart', 'starts with the head unit');
 
 tests.reduce((p, fn) => p.then(fn), Promise.resolve()).then(() => {
     console.log('ok (' + n + ' checks)');

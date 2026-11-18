@@ -120,6 +120,8 @@ write('package.json', {
     author: 'LightLog',
     license: 'MIT',
     mguHmi: ['ID8'],
+    /* MGU Store starts it with the head unit (without a screen until opened), so the welcome light is logged */
+    mguAppStartType: 'autostart',
 });
 
 const instance = (methods) => ({ instances: ['${userId}'], methods: methods });

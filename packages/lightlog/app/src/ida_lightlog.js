@@ -6,12 +6,21 @@
  *   - every POLL_MS it reads both LIN buses of the body controller (BDC 0x40, 22 DA5F / 22 E3D1) through the head
  *     unit's diagnostic link (uds.js): which light modules there are, and each one's state (lin.js);
  *   - it follows the engine (CDS.statusEngineSpeed2) and the car's speed (Vehicle2.statusCarSpeed2);
- *   - each change is an event (journal.js), shown on the screen, written to the app's log (VTLL) and to a text file.
+ *   - each change is an event (journal.js), shown on the screen, written to the app's log (LTLG) and to a text file;
+ *   - its screen shows only what may be the seat logos (journal.relevant()) and their log: drawn by the head unit's
+ *     renderer (ui.js, gpu.js) when MGU Store's Renderer is installed (touch, or the controller through the HMI
+ *     list underneath), else the HMI's own list (screen_model.js). A light can be pinned as a logo (touch); pins
+ *     are kept in lightlog-pins.json next to the log file.
+ *
+ * It starts with the head unit (package.json mguAppStartType autostart), so the welcome light at unlocking is in the
+ * log before anyone opens it.
  *
  * READ ONLY: it sends nothing but ReadDataByIdentifier requests (uds.check()). It changes nothing on the car.
  * Built on the head unit by MGU Store against the car's own oap-sdk (mgu-app.json).
  */
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const OnlineApp = require('oap-sdk/src/core/OnlineApp.js');
 const logging = require('oap-sdk/src/logging/logging');
 const { SomeipLink } = require('./someip_link.js');
@@ -20,6 +29,8 @@ const lin = require('./lin.js');
 const { Journal, line } = require('./journal.js');
 const { LogFile } = require('./log_file.js');
 const screen = require('./screen_model.js');
+const { Gpu } = require('./gpu.js');
+const ui = require('./ui.js');
 
 const logger = logging.getSDKLogger();
 
@@ -29,6 +40,9 @@ const POLL_MS = 4000;               // between two rounds of reads
 const SLOW_MS = 20000;              // between rounds while the body controller doesn't answer
 const REFUSED_MS = 60000;           // a bus whose read was refused is asked again after this
 const RENDER_MS = 1000;
+const FRAME_MS = 100;               // the drawn screen: looked at this often, sent when it changed (or each second)
+const ID8_AREA = { x: 0, y: 76, w: 2880, h: 764 };     // the app area under iDrive 8's status bar
+const VALUE_KEY = 0;                // a focus event's value in a raw userEvent's parameterMap
 const FOREGROUND_REASONS = ['ENTRY_POINT', 'LUM', 'BOOKMARK', 'START_WIDGET', 'TRIGGER_HMI', 'SPEECH_COMMAND'];
 const isTrue = (v) => v === true || v === 1 || v === 'true' || v === '1';
 
@@ -50,7 +64,9 @@ class LightLog extends OnlineApp {
         this._lastPress = {};
         this._visible = false;
         this._shutdown = null;
-        this._view = 'events';
+        this._view = 'seat';
+        this._gpu = null;
+        this._ui = { rec: new ui.Recorder(), targets: [], focus: null, pressed: null, down: null, key: '', timer: null };
         this._opening = null;
         this._dirty = true;
         this._timers = [];
@@ -60,6 +76,11 @@ class LightLog extends OnlineApp {
 
         this._journal = new Journal();
         this._file = new LogFile([process.env.HOME, process.cwd(), os.tmpdir()], 'lightlog.txt');
+        this._pinsFile = this._file.path ? path.join(path.dirname(this._file.path), 'lightlog-pins.json') : null;
+        try { if (this._pinsFile) this._journal.setPins(JSON.parse(fs.readFileSync(this._pinsFile, 'utf8'))); } catch (e) { /* none yet */ }
+        this._journal.on('pins', (keys) => {
+            try { if (this._pinsFile) fs.writeFileSync(this._pinsFile, JSON.stringify(keys)); } catch (e) { logger.warn('pins not saved: ' + e.message); }
+        });
         this._link = new SomeipLink(logger);
         this._uds = new Uds(this._link, logger);
         this._journal.on('event', (e) => {
@@ -91,6 +112,7 @@ class LightLog extends OnlineApp {
         const reason = (data && data.reason) || this.startReason;
         const foreground = FOREGROUND_REASONS.indexOf(reason) >= 0;
         return this._setupRhmi()
+            .then(() => this._startGpu())
             .then(() => this._pushRows())
             .then(() => this._registerEntryPoint()
                 .catch((err) => logger.warn('entry point: ' + (err && err.message) + '; starting without it')))
@@ -182,10 +204,13 @@ class LightLog extends OnlineApp {
             this._comps[b.name] = comp;
             try { this._byId[Number(comp.getId())] = b; } catch (e) { /* events from the component only */ }
             comp.on('action', () => this._press(b));
+            comp.on('focus', (ev) => this._focus(b.name, isTrue(ev && ev.value)));
         });
         rhmi.on('userEvent', (ev) => {
             const b = ev && ev.eventType === 'ACTION' && this._byId[Number(ev.sourceId)];
             if (b) this._press(b);
+            const f = ev && ev.eventType === 'FOCUS' && this._byId[Number(ev.sourceId)];
+            if (f) this._focus(f.name, isTrue((ev.parameterMap || {})[VALUE_KEY]));
         });
         rhmi.on('applicationStackChanged', (stack) => {
             const keys = stack && typeof stack === 'object' ? Object.keys(stack) : [];
@@ -238,10 +263,80 @@ class LightLog extends OnlineApp {
     _setVisible(visible) {
         if (this._shutdown || this._visible === visible) return;
         this._visible = visible;
+        this._syncGpu();
         if (visible) { this._written = {}; this._render(); }
         const reports = visible ? [this.registerActive(), this.registerHmiVisible()]
             : [this.unregisterHmiVisible(), this.registerInactive()];
         reports.forEach((r) => Promise.resolve(r).catch((err) => logger.warn('app status report failed: ' + (err && err.message))));
+    }
+
+    /* ---- the drawn screen ---- */
+    _startGpu() {
+        if (this._gpu) return;
+        const gpu = new Gpu('ida_lightlog', logger);
+        this._gpu = gpu;
+        gpu.on('ready', (scr, area) => {
+            const a = area && area.w >= 1000 && area.h >= 400 ? area
+                : scr.w === 2880 ? ID8_AREA : { x: 0, y: 0, w: scr.w, h: scr.h };
+            gpu.place(ui.placement(a));
+            this._ui.key = '';
+            if (this._view === 'log') this._view = 'seat';     // the drawn screen shows the log beside the lights
+            this._syncGpu();
+        });
+        gpu.on('touch', (phase, x, y) => this._touch(phase, x, y));
+        gpu.on('closed', () => setTimeout(() => this._syncGpu(true), 700));
+        gpu.on('lost', () => { this._ui.key = ''; });
+        gpu.connect();
+        this._ui.timer = setInterval(() => this._frame(), FRAME_MS);
+    }
+
+    _drawn() { return !!(this._gpu && this._gpu.ready); }
+
+    _syncGpu(again) {
+        const gpu = this._gpu;
+        if (!gpu) return;
+        const on = this._visible && gpu.ready && !this._shutdown;
+        if (again && on) gpu.visible = false;
+        gpu.show(on);
+        if (on) { this._ui.key = ''; this._frame(); }
+    }
+
+    _statusData() {
+        const j = this._journal;
+        return { linkReady: this._uds.ready, linkError: this._uds.error, buses: this._buses, engine: j.engine, kmh: j.kmh, file: this._file.path };
+    }
+
+    _frame() {
+        const gpu = this._gpu, u = this._ui;
+        if (!gpu || !gpu.ready || !gpu.visible) return;
+        const m = screen.drawModel(this._journal, this._statusData(), this._view, u.focus, u.pressed);
+        const key = JSON.stringify([m.status, m.view, m.seat, m.all.length, m.log.length && m.log[0], m.log.length, m.pins, m.marks, m.focus, m.pressed]);
+        const now = Date.now();
+        if (gpu.waiting && now - gpu.sentAt < 1000) return;
+        if (key === u.key && now - gpu.sentAt < 1000) return;
+        u.key = key;
+        u.targets = ui.draw(u.rec, m).targets;
+        gpu.claim([{ x: 0, y: 0, w: ui.W, h: ui.H }]);
+        gpu.frame(u.rec);
+    }
+
+    _focus(name, on) {
+        if (on) this._ui.focus = name;
+        else if (this._ui.focus === name) this._ui.focus = null;
+    }
+
+    _touch(phase, x, y) {
+        const u = this._ui, t = ui.hit(u.targets, x, y);
+        if (phase === 1) { u.down = t ? t.key : null; u.pressed = u.down; return; }
+        if (phase === 2) { if (!t || t.key !== u.down) u.pressed = null; return; }
+        if (phase !== 3) return;
+        const key = u.down;
+        u.down = null;
+        setTimeout(() => { if (!u.down) u.pressed = null; }, 150);
+        if (!t || t.key !== key) return;
+        if (key.indexOf('pin:') === 0) { this._journal.togglePin(key.slice(4)); this._dirty = true; return; }
+        const b = screen.BUTTONS.find((x) => x.name === key);
+        if (b) this._press(b);
     }
 
     _press(b) {
@@ -250,7 +345,7 @@ class LightLog extends OnlineApp {
         this._lastPress[b.name] = now;
         if (b.name === 'llMark') this._journal.mark();
         else if (b.name === 'llRead') { this._journal.note('read asked for on the screen'); this._poll(); }
-        else if (b.name === 'llView') this._view = screen.nextView(this._view);
+        else if (b.name === 'llView') this._view = this._drawn() ? (this._view === 'all' ? 'seat' : 'all') : screen.nextView(this._view);
         else if (b.name === 'llClear') { this._journal.clear(); this._file.write('---- screen log cleared ----'); }
         this._dirty = true;
         this._render();
@@ -269,10 +364,7 @@ class LightLog extends OnlineApp {
         this._dirty = false;
         if (!this.rhmiApplication || !this._state) return;
         const j = this._journal;
-        this._set(STATUS, 'Text', screen.status({
-            linkReady: this._uds.ready, linkError: this._uds.error,
-            buses: this._buses, engine: j.engine, kmh: j.kmh, file: this._file.path,
-        }));
+        this._set(STATUS, 'Text', screen.status(this._statusData()));
         screen.BUTTONS.forEach((b) => {
             this._set(b.name, 'PrimaryText', b.label);
             const v = b.name === 'llView' ? screen.viewLabel(this._view) : b.name === 'llMark' && j.marks ? j.marks + ' so far' : '';
@@ -289,6 +381,8 @@ class LightLog extends OnlineApp {
         this._file.write('---- stopped (' + reason + ') ----');
         clearTimeout(this._pollTimer);
         this._timers.forEach((t) => { clearInterval(t); clearTimeout(t); });
+        clearInterval(this._ui.timer);
+        if (this._gpu) this._gpu.close();
         this._link.stop();
         this._shutdown = Promise.resolve()
             .then(() => this.destroyBundles().catch((err) => logger.info('destroyBundles: ' + (err && err.message))))
