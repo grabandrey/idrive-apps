@@ -29,15 +29,17 @@ const shader = require('./shader.js');
 const FONT = require('./font.js');
 const { TextCanvas } = require('./text.js');
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const CLIENT = process.env.CLUSTER_RENDER_CLIENT || '/var/opt/cluster-render/current/cluster_render_client.js';
 const DATA_DIR = process.env.VITALS_DATA || '/var/opt/ida-vitals-cluster';
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const CTL = process.env.VITALS_CTL || '/run/ida-vitals-cluster/ctl.sock';
 const TICK_MS = 250;
 
-/* the widget's place in the 2240x896 widget canvas: the iDrive 8 safe rect (the union of
- * layout 4, 630x570@805,125, and layout 5, 612x527@814,170; cluster-render README) */
+/* the widget's place in the 2240x896 widget canvas. iDrive 8's safe rects are layout 4, 630x570@805,125,
+ * and layout 5, 612x527@814,170 (cluster-render README); placed at layout 5's top, everything drawn
+ * (y 20..510 of the layer) is inside both, and on cars that clip to layout 5 the top is no longer cut off.
+ * shiftY (the app's "Widget position") moves it from there, px, positive = lower. */
 const DEFAULTS = {
     tempUnit: 'auto',      // auto (the car's), C, F
     pressUnit: 'auto',     // auto (the car's), bar, psi, kPa
@@ -49,15 +51,16 @@ const DEFAULTS = {
     demo: false,
     target: 'vitals',
     fallbackTarget: 'widget',
-    x: 805, y: 125,
+    shiftY: 0,
+    x: 805, y: 170,
 };
-const EDITABLE = ['tempUnit', 'pressUnit', 'coolantWarn', 'oilWarn', 'gearboxWarn', 'accent', 'pressures', 'demo'];
+const EDITABLE = ['tempUnit', 'pressUnit', 'coolantWarn', 'oilWarn', 'gearboxWarn', 'accent', 'pressures', 'demo', 'shiftY'];
 const CHOICES = {
     tempUnit: ['auto', 'C', 'F'],
     pressUnit: ['auto', 'bar', 'psi', 'kPa'],
     accent: ['blue', 'lightblue', 'white'],
 };
-const RANGES = { coolantWarn: [95, 130], oilWarn: [110, 150], gearboxWarn: [100, 140] };
+const RANGES = { coolantWarn: [95, 130], oilWarn: [110, 150], gearboxWarn: [100, 140], shiftY: [-60, 140] };
 
 function log(msg) { process.stdout.write(new Date().toISOString() + ' vitals: ' + msg + '\n'); }
 
@@ -160,7 +163,7 @@ function main() {
         ['V', 'L'].forEach((k) => {
             tex[k] = cr.asset({ target: target, format: 'r8', w: L.W, h: L.H, sampling: 'nearest', wrap: 'clamp' });
         });
-        layer = cr.effect({ target: target, klass: 'content', x: S.x, y: S.y, w: L.W, h: L.H, fs: FS, visible: 1 });
+        layer = cr.effect({ target: target, klass: 'content', x: S.x, y: S.y + S.shiftY, w: L.W, h: L.H, fs: FS, visible: 1 });
         status.target = target;
         if (!layer || !tex.V || !tex.L) { log('layer or texture rejected by the client'); status.layer = 'rejected'; return; }
         cr.bind(layer, 'u_texV', tex.V);
@@ -205,10 +208,10 @@ function main() {
     }
 
     function apply(next, why) {
-        const moved = next.x !== S.x || next.y !== S.y;
+        const moved = next.x !== S.x || next.y + next.shiftY !== S.y + S.shiftY;
         S = next;
         log('settings ' + why + ': ' + EDITABLE.map((k) => k + '=' + S[k]).join(' '));
-        if (moved && layer) cr.set(layer, { x: S.x, y: S.y });
+        if (moved && layer) cr.set(layer, { x: S.x, y: S.y + S.shiftY });
         render(false);
     }
 

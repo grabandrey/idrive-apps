@@ -22,7 +22,7 @@
         divider: { y: 236, x0: 40, x1: 592 },
         tyreHead: { y: 266 },
         /* the tyres: centres dx either side of cx, a front and a rear row; half size, corner radius */
-        tyre: { cx: 316, dx: 64, yFront: 356, yRear: 488, hw: 14, hh: 36, r: 6 },
+        tyre: { cx: 316, dx: 64, yFront: 350, yRear: 462, hw: 14, hh: 36, r: 6 },
         /* the text beside a tyre: gap px from the tyre's outer edge; temperature and pressure baselines */
         tyreText: { gap: 26, dyT: 4, dyP: 34 },
     };

@@ -37,6 +37,7 @@ const BUTTONS = [
     [25, 'vtGearboxWarn', 'Gearbox oil warning'],
     [26, 'vtAccent', 'Gauge colour'],
     [27, 'vtPressures', 'Tyre pressures'],
+    [30, 'vtPosition', 'Widget position'],
     [28, 'vtDemo', 'Demo values'],
     [29, 'vtReset', 'Reset to defaults'],
 ];

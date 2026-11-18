@@ -18,6 +18,7 @@ const IF_TPMS = 'de.bmw.infotainment.vehicle.TPMS';
 const IF_VEHICLE = 'de.bmw.infotainment.vehicle.Vehicle';
 const IF_BASIC = 'de.bmw.infrastructure.analytics.BasicDataSet';
 const TPMS_POLL_MS = 5000;
+const STUCK_RISE = 25;              // C of engine oil warming with a gearbox value that never moved
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -30,7 +31,8 @@ class CarData extends EventEmitter {
         this.proxies = {};
         this.timers = [];
         this.available = { engine: false, gearbox: false, tyres: false };
-        this.gearboxFirst = null;           // the first raw gearbox value, until it changes
+        this.gearbox = { first: null, oilAtFirst: null, moved: false, stuck: false, logged: 0 };
+        this.oil = null;                    // the latest engine oil temperature, C
     }
 
     start() {
@@ -49,23 +51,14 @@ class CarData extends EventEmitter {
         step(() => this._watch(IF_CDS, '1', {
             statusEngineTemperature: (v) => {
                 this.available.engine = true;
-                this.emit('data', decode.engine(v));
+                const e = decode.engine(v);
+                if (e.oil !== null) this.oil = e.oil;
+                this.emit('data', e);
             },
         }));
         // basicDataSet is notify-only (no getter): subscribed, never read
         step(() => this._watch(IF_BASIC, '1', {
-            basicDataSet: (v) => {
-                const raw = v && v.valueTemperatureTransmissionOil;
-                if (typeof raw !== 'number' || raw === 255) return;
-                if (!this.available.gearbox) {
-                    // a value that never changes is a car that doesn't fill it in
-                    if (this.gearboxFirst === null) { this.gearboxFirst = raw; this.log.info('gearbox oil: first raw value ' + raw); return; }
-                    if (raw === this.gearboxFirst) return;
-                    this.available.gearbox = true;
-                    this.log.info('gearbox oil: moved to raw ' + raw + ', showing it');
-                }
-                this.emit('data', { gearbox: decode.gearbox(v) });
-            },
+            basicDataSet: (v) => this._gearbox(v),
         }, 0, ['basicDataSet']));
         step(() => this._watch(IF_TPMS, '1', {
             statusTyreTemperature: (v) => { this.raw.tyreT = v; this._tyres(); },
@@ -80,6 +73,31 @@ class CarData extends EventEmitter {
             const p = this.proxies[k];
             try { if (p && p.shutdown) p.shutdown(); } catch (e) { /* stopping anyway */ }
         });
+    }
+
+    /* gearbox oil: shown at once when the value is plausible. Some cars never fill the field in and send
+     * one fixed number: a value that has not moved once while the engine oil warmed by STUCK_RISE C is
+     * taken for that, and hidden. Raw values go to the log (the first few, then each change). */
+    _gearbox(v) {
+        const g = this.gearbox;
+        const raw = v && v.valueTemperatureTransmissionOil;
+        if (g.logged < 5 || (typeof raw === 'number' && raw !== g.last)) {
+            if (g.logged < 40) { g.logged++; this.log.info('gearbox oil raw ' + raw + (g.logged === 1 ? ' (fields: ' + Object.keys(v || {}).join(',') + ')' : '')); }
+        }
+        g.last = raw;
+        const c = decode.gearbox(v);
+        if (c === null || c < -40 || c > 160 || g.stuck) return;
+        if (g.first === null) { g.first = raw; g.oilAtFirst = this.oil; }
+        if (raw !== g.first) g.moved = true;
+        if (!g.moved && g.oilAtFirst !== null && this.oil !== null && this.oil - g.oilAtFirst >= STUCK_RISE) {
+            g.stuck = true;
+            this.available.gearbox = false;
+            this.log.info('gearbox oil stuck at raw ' + raw + ' while the engine oil warmed: this car does not send it');
+            this.emit('data', { gearbox: null });
+            return;
+        }
+        this.available.gearbox = true;
+        this.emit('data', { gearbox: c });
     }
 
     _tyres() {

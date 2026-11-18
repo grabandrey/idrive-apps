@@ -12,7 +12,8 @@
     var L = typeof module !== 'undefined' && module.exports ? require('./layout.js') : root.VITALS_LAYOUT;
 
     var ENGINE_STALE_MS = 15000;     // CDS sends often; a quiet one means the car is off
-    var GEARBOX_STALE_MS = 60000;    // BasicDataSet comes less often
+    var GEARBOX_STALE_MS = 60000;    // BasicDataSet comes less often...
+    var GEARBOX_HOLD_MS = 600000;    // ...and on some cars only when the value changes: held while the engine is live
     var TYRES_STALE_MS = 180000;     // TPMS answers every few seconds at best, and only while rolling on some cars
 
     var ACCENTS = {
@@ -72,7 +73,7 @@
     function compose(s, data, now) {
         var d = s.demo ? demoData(now) : (data || {});
         var engineOk = num(d.engineAt) && now - d.engineAt < ENGINE_STALE_MS;
-        var gearboxOk = num(d.gearboxAt) && now - d.gearboxAt < GEARBOX_STALE_MS;
+        var gearboxOk = num(d.gearboxAt) && (now - d.gearboxAt < GEARBOX_STALE_MS || (engineOk && now - d.gearboxAt < GEARBOX_HOLD_MS));
         var tyresOk = num(d.tyresAt) && now - d.tyresAt < TYRES_STALE_MS;
         var vals = {
             coolant: engineOk && num(d.coolant) ? d.coolant : null,

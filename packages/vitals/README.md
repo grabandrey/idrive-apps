@@ -58,9 +58,11 @@ dashes, open the Vitals app: its status line says whether engine, gearbox and ty
 to dashes 15 s after the last update (for example, with the car off), gearbox oil after a minute. Tyre values
 last 3 minutes, because the tyre sensors report slowly and, on some cars, only while driving.
 
-**Gearbox oil** comes from `BasicDataSet.valueTemperatureTransmissionOil`. Some cars never fill it in and send
-the same value forever, so the app shows it only once it has changed at least once. With the car started from
-cold that takes a minute or two. If it stays on dashes while you drive, your car doesn't send it.
+**Gearbox oil** comes from `BasicDataSet.valueTemperatureTransmissionOil`, which the car sends only now and then
+(on some cars only when it changes), so it stays on screen as long as the engine data is live. It shows as soon as
+the first plausible value arrives. Some cars never fill it in and send one fixed number: when it hasn't moved once
+while the engine oil warmed by 25 °C, the app takes it for that and shows dashes. The raw values are in the app's
+log (`VTLS`, "gearbox oil raw").
 
 ## Settings (the Vitals app)
 
@@ -73,6 +75,7 @@ cold that takes a minute or two. If it stays on dashes while you drive, your car
 | Gearbox oil warning | 100 → 140 °C in 5° steps (default 120) |
 | Gauge colour | Blue → Light blue → White |
 | Tyre pressures | Shown / Hidden |
+| Widget position | Default → 20 … 140 px lower → 60 … 20 px higher: moves the widget up or down in the cluster |
 | Demo values | On / Off: a warm-up and a hot lap, to check the widget without driving |
 | Reset to defaults | everything back |
 

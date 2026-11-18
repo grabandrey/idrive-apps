@@ -33,8 +33,16 @@ assert.strictEqual(press('vtAccent').accent, 'lightblue');
 assert.strictEqual(row('vtAccent').value(s), 'Light blue');
 assert.strictEqual(press('vtPressures').pressures, false);
 assert.strictEqual(row('vtPressures').value(s), 'Hidden');
+assert.strictEqual(row('vtPosition').value(s), 'Default');
+assert.strictEqual(press('vtPosition').shiftY, 20);
+assert.strictEqual(row('vtPosition').value(s), '20 px lower');
+for (let i = 0; i < 7; i++) press('vtPosition');
+assert.strictEqual(s.shiftY, -60);
+assert.strictEqual(row('vtPosition').value(s), '60 px higher');
+assert.strictEqual(svc.normalize({ shiftY: 500 }).shiftY, 0, 'a position out of range falls back');
 assert.strictEqual(press('vtDemo').demo, true);
 press('vtReset');
+assert.strictEqual(s.shiftY, 0);
 assert.deepStrictEqual([s.tempUnit, s.pressUnit, s.coolantWarn, s.oilWarn, s.gearboxWarn, s.accent, s.pressures, s.demo],
     ['auto', 'auto', 115, 135, 120, 'blue', true, false]);
 
@@ -109,3 +117,39 @@ assert.strictEqual(peak(withUnit.x, split), 255, 'the number at full strength');
 assert.ok(peak(split, 302) > 0 && peak(split, 302) <= 153, 'the unit fainter (dim 0.6)');
 
 console.log('vitals model, decoding and view: ok');
+
+/* ---- gearbox oil (car_data.js, with stand-ins for BMW's SDK) ---- */
+const Module = require('module');
+const realLoad = Module._load;
+Module._load = function (req) {
+    if (req === 'oap-sdk/src/someip/someipBuilders') return { buildTypedProxy: () => Promise.reject(new Error('no SDK here')) };
+    return realLoad.apply(this, arguments);
+};
+const { CarData } = require('../src/car_data.js');
+Module._load = realLoad;
+const quiet = { info() {}, warn() {} };
+let car = new CarData(quiet), got = [];
+car.on('data', (d) => got.push(d));
+car._gearbox({ valueTemperatureTransmissionOil: 255 });
+assert.strictEqual(got.length, 0, '255 = no value');
+car._gearbox({ valueTemperatureTransmissionOil: 48 + 31 });
+assert.deepStrictEqual(got.pop(), { gearbox: 31 }, 'the first plausible value shows at once');
+car = new CarData(quiet); got = [];
+car.on('data', (d) => got.push(d));
+car.oil = 20;
+car._gearbox({ valueTemperatureTransmissionOil: 100 });
+car.oil = 50;
+car._gearbox({ valueTemperatureTransmissionOil: 100 });
+assert.deepStrictEqual(got.pop(), { gearbox: null }, 'a value that never moves while the engine warms is hidden');
+car._gearbox({ valueTemperatureTransmissionOil: 101 });
+assert.strictEqual(got.length, 1, 'and stays hidden');
+
+/* the gearbox value stays while the engine data is live, even when the car sends it rarely */
+const gd = { coolant: 80, oil: 90, gearbox: 70, engineAt: now + 300000, gearboxAt: now };
+const gf = (v2) => v2.fields.find((f) => f.id === 'gearbox.value').text;
+assert.strictEqual(gf(view.compose(svc.normalize({}), gd, now + 300000)), '70');
+assert.strictEqual(gf(view.compose(svc.normalize({}), gd, now + 700000)), '– –');
+
+/* the layout fits the layer */
+assert.ok(layout.tyre.yRear + layout.tyreText.dyP + 12 < layout.H - 40, 'room at the bottom');
+console.log('  gearbox, position: ok');

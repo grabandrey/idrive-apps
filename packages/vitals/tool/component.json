@@ -1,7 +1,7 @@
 {
   "id": "ida-vitals-cluster",
   "kind": "tool",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "title": "Vitals Cluster",
   "description": "iDrive 8-style widget for the middle of the cluster: water, engine oil and gearbox oil temperature bars, and each tyre's temperature and pressure. Pick 'Vitals' in the cluster's widget menu; the Vitals app feeds it the car's data and holds its settings. EXPERIMENTAL, untested on a car.",
   "optional": true,

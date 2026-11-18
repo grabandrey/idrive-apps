@@ -17,6 +17,15 @@ const model = require('./settings_model.js');
 
 const logger = logging.getSDKLogger();
 
+/* p, or nothing after ms: a call the HMI never answers must not hold up the start */
+function within(p, ms, what) {
+    let timer;
+    const late = new Promise((resolve) => { timer = setTimeout(() => { logger.warn(what + ': no answer after ' + ms + ' ms, going on'); resolve(); }, ms); });
+    return Promise.race([Promise.resolve(p), late])
+        .catch((err) => logger.warn(what + ' failed: ' + (err && err.message)))
+        .then((v) => { clearTimeout(timer); return v; });
+}
+
 const STATE = 'ST_OnlineApps_Vitals';
 const STATUS = 'vtStatus';
 const ROW_KEY = 2;                  // a press's row in a raw userEvent's parameterMap
@@ -37,6 +46,7 @@ class Vitals extends OnlineApp {
         this._shutdown = null;
         this._pending = {};
         this._sendTimer = null;
+        this._opening = null;
         this._ctl = new CtlClient();
         this._car = new CarData(logger);
 
@@ -67,7 +77,9 @@ class Vitals extends OnlineApp {
         const reason = (data && data.reason) || this.startReason;
         const foreground = FOREGROUND_REASONS.indexOf(reason) >= 0;
         return this._setupRhmi()
-            .then(() => this._registerEntryPoint())
+            .then(() => this._pushRows())
+            .then(() => this._registerEntryPoint()
+                .catch((err) => logger.warn('entry point: ' + (err && err.message) + '; starting without it')))
             .then(() => {
                 if (foreground) this.registerActive();
                 return this.initialized();
@@ -126,6 +138,16 @@ class Vitals extends OnlineApp {
         return Promise.resolve();
     }
 
+    /* The HMI has no rows for a state until the app pushes them (BMW's apps do it with updateResources
+     * before opening a state): without this the screen opened empty. Then every cell is written again. */
+    _pushRows() {
+        if (!this._state || !this._state.updateResources) return Promise.resolve();
+        return within(this._state.updateResources(), 4000, 'screen resources').then(() => {
+            this._written = {};
+            this._render();
+        });
+    }
+
     _registerEntryPoint() {
         const descriptions = (this.appDescription && this.appDescription.application.entryPoints) || [];
         const ours = this.getEntryPoints().find((ep) => descriptions.some((d) => d.uuid === ep.getDescription().uuid));
@@ -137,11 +159,30 @@ class Vitals extends OnlineApp {
             .then(() => logger.info('entry point ' + description.name + ' ENABLED'));
     }
 
-    _open(uuid) {
+    /* tries: right after a tap started the app, the HMI can still refuse the state (INVALID_UUID /
+     * INVALID_COMPONENTID); it is asked again 0.8 s later rather than needing a second tap */
+    _open(uuid, tries) {
         if (this._shutdown || !this.rhmiApplication || !uuid) return Promise.resolve();
-        this._setVisible(true);
-        return Promise.resolve(this.rhmiApplication.openEntryState(uuid))
-            .catch((err) => logger.warn('openEntryState failed: ' + (err && err.message)));
+        if (this._opening) return this._opening;            // the manager can send one tap twice
+        if (tries === undefined) tries = 3;
+        let again = false;
+        this._opening = this._pushRows()
+            .then(() => this.rhmiApplication.openEntryState(uuid))
+            .then(() => {
+                this._setVisible(true);
+                this._written = {};
+                this._render();
+            })
+            .catch((err) => {
+                const text = String(err && err.message ? err.message : err) + ' ' + JSON.stringify(err || {});
+                if (tries > 1 && /INVALID/.test(text)) again = true;
+                else logger.warn('openEntryState failed: ' + text);
+            })
+            .then(() => {
+                this._opening = null;
+                if (again) setTimeout(() => this._open(uuid, tries - 1), 800);
+            });
+        return this._opening;
     }
 
     _setVisible(visible) {

@@ -14,7 +14,7 @@
       "build": "unit",
       "title": "Vitals",
       "description": "Water, engine oil, gearbox oil and tyre temperatures in the iDrive 8 cluster: reads the car's data for the Vitals widget and holds its settings.",
-      "requires": { "ida-vitals-cluster": "1.1.0" },
+      "requires": { "ida-vitals-cluster": "1.2.0" },
       "uninstallable": true,
       "mguHmi": ["ID8"]
     }
