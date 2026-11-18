@@ -5,6 +5,9 @@
  *
  * CDS.statusEngineTemperature   temperatureEngineDrive (coolant), temperatureEngineOilDrive:
  *                               C + 48, 255 = none
+ * BasicDataSet.basicDataSet     valueTemperatureTransmissionOil (gearbox oil): C + 48, 255 = none.
+ *                               Some cars never fill it in and send one fixed value: car_data.js
+ *                               passes it on only once it has changed.
  * TPMS.statusTyreTemperature    actualValueTemperatureTyre{FL,FR,RL,RR}H: the car's degrees + 40,
  *                               65535 = none (F when the car is set to F)
  * TPMS.statusTyrePressure       actualValuePressureTyre{FL,FR,RL,RR}H: 0.1 x the car's pressure
@@ -21,6 +24,12 @@ function num(v) { return typeof v === 'number' && isFinite(v); }
 function engine(v) {
     const t = (raw) => (num(raw) && raw >= 0 && raw < 255 ? raw - 48 : null);
     return { coolant: t(v && v.temperatureEngineDrive), oil: t(v && v.temperatureEngineOilDrive) };
+}
+
+/* gearbox oil in C, or null */
+function gearbox(v) {
+    const raw = v && v.valueTemperatureTransmissionOil;
+    return num(raw) && raw >= 0 && raw < 255 ? raw - 48 : null;
 }
 
 function tempUnit(x) {
@@ -66,4 +75,4 @@ function tyrePressures(v, carPress) {
     return out;
 }
 
-module.exports = { engine, units, tyreTemps, tyrePressures, CORNERS };
+module.exports = { engine, gearbox, units, tyreTemps, tyrePressures, CORNERS };

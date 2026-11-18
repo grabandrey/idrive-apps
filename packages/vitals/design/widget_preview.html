@@ -9,6 +9,8 @@
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:16px}
   .still{padding:0}
   canvas{display:block;width:min(632px,100%);height:auto;aspect-ratio:632/572;background:#000}
+  /* the widget is transparent: a checkerboard behind it shows where */
+  canvas.checker{background:repeating-conic-gradient(#202024 0% 25%,#121214 0% 50%) 0 0/24px 24px}
   .still canvas{width:632px}
   .row{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
   button{background:#141418;color:var(--text);border:1px solid var(--line);padding:8px 14px;cursor:pointer;font-weight:600}
@@ -18,12 +20,12 @@
 </style>
 </head>
 <body>
-<canvas id="c" width="632" height="572"></canvas>
+<canvas id="c" width="632" height="572" class="checker"></canvas>
 <div class="row" id="ui">
   <button data-a="blue" class="on">BLUE</button><button data-a="lightblue">LIGHT BLUE</button><button data-a="white">WHITE</button>
-  <button id="units">°C / BAR</button><button id="press">PRESSURES</button><button id="bg">BACKDROP</button>
+  <button id="units">°C / BAR</button><button id="press">PRESSURES</button><button id="bgk">CHECKER / BLACK</button>
 </div>
-<p id="note">Renders with the car's own code: packages/vitals/tool: layout.js, view.js, text.js, font.js and shader.js (WebGL 1 / GLSL ES 1.00). The data is the built-in demo: a warm-up, then a hot lap.</p>
+<p id="note">Renders with the car's own code: packages/vitals/tool: layout.js, view.js, text.js, font.js and shader.js (WebGL 1 / GLSL ES 1.00). The data is the built-in demo: a warm-up, then a hot lap. The widget has no background of its own: the checkerboard shows through wherever it's transparent.</p>
 <div id="err"></div>
 <script src="../tool/layout.js"></script>
 <script src="../tool/view.js"></script>
@@ -33,10 +35,11 @@
 <script>
 const q = new URLSearchParams(location.search);
 const still = q.has('still');
-if (still) { document.body.className = 'still'; document.getElementById('ui').remove(); document.getElementById('note').remove(); }
+if (still && q.get('bg') !== 'checker') document.getElementById('c').classList.remove('checker');
+if (still) { document.body.className = 'still'; ['ui', 'note'].forEach(id => document.getElementById(id).remove()); }
 const L = VITALS_LAYOUT, V = VITALS_VIEW;
-const S = { tempUnit: 'auto', pressUnit: 'auto', coolantWarn: 115, oilWarn: 135, accent: q.get('accent') || 'blue',
-  pressures: true, backdrop: true, demo: true };
+const S = { tempUnit: 'auto', pressUnit: 'auto', coolantWarn: 115, oilWarn: 135, gearboxWarn: 120, accent: q.get('accent') || 'blue',
+  pressures: true, demo: true };
 const cv = document.getElementById('c');
 const gl = cv.getContext('webgl', { premultipliedAlpha: false, preserveDrawingBuffer: true });
 const VS = 'attribute vec2 a; varying vec2 v_uv; void main(){ v_uv = vec2(a.x*0.5+0.5, 0.5-a.y*0.5); gl_Position = vec4(a,0.0,1.0); }';
@@ -53,13 +56,13 @@ try {
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
 } catch (e) { ok = false; document.getElementById('err').textContent = 'SHADER ERROR\n' + e.message; document.title = 'SHADER ERROR'; }
 
-/* fixed states for screenshots: ?still&state=warm|cold|hot|nodata */
+/* fixed states for screenshots: ?still&state=warm|cold|hot|nodata (&bg=checker: show the transparency) */
 function stillData(state, now) {
-  const base = { carTemp: 'C', carPress: 'BAR', engineAt: now, tyresAt: now };
+  const base = { carTemp: 'C', carPress: 'BAR', engineAt: now, gearboxAt: now, tyresAt: now };
   if (state === 'nodata') return {};
-  if (state === 'cold') return Object.assign(base, { coolant: 52, oil: 41, tyreT: { FL: 9, FR: 10, RL: 8, RR: 9 }, tyreP: { FL: 2.2, FR: 2.2, RL: 2.4, RR: 2.4 } });
-  if (state === 'hot') return Object.assign(base, { coolant: 112, oil: 141, tyreT: { FL: 97, FR: 88, RL: 79, RR: 72 }, tyreP: { FL: 2.8, FR: 2.7, RL: 2.9, RR: 2.9 } });
-  return Object.assign(base, { coolant: 92, oil: 104, tyreT: { FL: 41, FR: 43, RL: 37, RR: 38 }, tyreP: { FL: 2.4, FR: 2.4, RL: 2.6, RR: 2.6 } });
+  if (state === 'cold') return Object.assign(base, { coolant: 52, oil: 41, gearbox: 28, tyreT: { FL: 9, FR: 10, RL: 8, RR: 9 }, tyreP: { FL: 2.2, FR: 2.2, RL: 2.4, RR: 2.4 } });
+  if (state === 'hot') return Object.assign(base, { coolant: 112, oil: 141, gearbox: 124, tyreT: { FL: 97, FR: 88, RL: 79, RR: 72 }, tyreP: { FL: 2.8, FR: 2.7, RL: 2.9, RR: 2.9 } });
+  return Object.assign(base, { coolant: 92, oil: 104, gearbox: 81, tyreT: { FL: 41, FR: 43, RL: 37, RR: 38 }, tyreP: { FL: 2.4, FR: 2.4, RL: 2.6, RR: 2.6 } });
 }
 
 if (ok) {
@@ -68,7 +71,7 @@ if (ok) {
   const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   const tex = {};
   const canvases = { V: new VITALS_TEXT.TextCanvas(L.W, L.H, VITALS_FONT), L: new VITALS_TEXT.TextCanvas(L.W, L.H, VITALS_FONT) };
@@ -81,8 +84,8 @@ if (ok) {
   document.querySelectorAll('[data-a]').forEach(x => x.onclick = () => { S.accent = x.dataset.a; document.querySelectorAll('[data-a]').forEach(y => y.classList.toggle('on', y === x)); });
   const ub = document.getElementById('units'); if (ub) ub.onclick = () => {
     const f = S.tempUnit !== 'F'; S.tempUnit = f ? 'F' : 'C'; S.pressUnit = f ? 'psi' : 'bar'; ub.textContent = f ? '°F / PSI' : '°C / BAR'; };
+  const kb = document.getElementById('bgk'); if (kb) kb.onclick = () => cv.classList.toggle('checker');
   const pb = document.getElementById('press'); if (pb) pb.onclick = () => { S.pressures = !S.pressures; };
-  const bb = document.getElementById('bg'); if (bb) bb.onclick = () => { S.backdrop = !S.backdrop; };
   if (still) { S.demo = false; S.tempUnit = q.get('t') || 'auto'; S.pressUnit = q.get('p') || 'auto'; }
 
   function frame(now) {
@@ -93,7 +96,7 @@ if (ok) {
       if (!tex[k].ready) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, L.W, L.H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, canvases[k].px); tex[k].ready = true; }
       else rects.forEach(r => gl.texSubImage2D(gl.TEXTURE_2D, 0, r.x, r.y, r.w, r.h, gl.LUMINANCE, gl.UNSIGNED_BYTE, canvases[k].pack([r])));
     });
-    gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
     Object.keys(view.uniforms).forEach(n => {
       const v = view.uniforms[n], l = gl.getUniformLocation(prog, n);
       if (!l) return;

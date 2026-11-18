@@ -20,11 +20,9 @@ OUT = os.path.join(ROOT, "packages", "vitals", "tool", "font.js")
 
 STYLES = {
     # name: (file, px)
-    "value": ("Barlow-Light.ttf", 64),     # coolant / oil readouts
-    "tyre": ("Barlow-Light.ttf", 40),      # tyre temperatures
+    "value": ("Barlow-Light.ttf", 40),     # the bars' readouts, tyre temperatures
     "unit": ("Barlow-Regular.ttf", 20),    # degree units, pressures
-    "label": ("Barlow-Medium.ttf", 16),    # COOLANT, OIL, TYRES (spaced capitals)
-    "scale": ("Barlow-Regular.ttf", 15),   # arc end numbers
+    "label": ("Barlow-Medium.ttf", 16),    # WATER, ENGINE OIL, TYRES, the car (spaced capitals)
 }
 CHARS = "".join(chr(c) for c in range(32, 127)) + "\N{DEGREE SIGN}\N{EN DASH}\N{MIDDLE DOT}"
 

@@ -1,22 +1,22 @@
 'use strict';
 /*
- * Vitals: an iDrive 8-style cluster widget with coolant and oil temperature gauges and the
- * four tyres' temperatures and pressures, for BMW iDrive 8 (MGU). A root tool installed
+ * Vitals: an iDrive 8-style cluster widget with water, engine oil and gearbox oil temperature
+ * bars and the four tyres' temperatures and pressures, for BMW iDrive 8 (MGU). A root tool installed
  * by MGU Store; it draws through cluster-render on an iDrive 8 widget target.
  *
  * What draws what:
- *   shader.js   every shape (arcs, divider, car, tyres), from layout.js
+ *   shader.js   every shape (bars, divider, tyres), from layout.js
  *   text.js     the numbers and labels into two r8 textures, with the glyphs in font.js
  *   view.js     settings + car data -> the shader's uniforms and the text
  *
- * Car data comes from the Vitals app (packages/vitals/app), which reads CDS and TPMS
+ * Car data comes from the Vitals app (packages/vitals/app), which reads CDS, BasicDataSet and TPMS
  * through BMW's own SDK and sends them here. This service runs as root and has no SDK.
  *
  * Control socket /run/ida-vitals-cluster/ctl.sock, JSON lines, one reply per request:
  *   -> {"op":"get"}                                 <- {"ok":true,"settings":{...},"status":{...}}
  *   -> {"op":"set","settings":{"accent":"white"}}   (only the keys in EDITABLE; every value checked)
  *   -> {"op":"reset"}
- *   -> {"op":"data","data":{"coolant":91,"oil":104,"tyreT":{...},"tyreP":{...},"carTemp":"C","carPress":"BAR"}}
+ *   -> {"op":"data","data":{"coolant":91,"oil":104,"gearbox":80,"tyreT":{...},"tyreP":{...},"carTemp":"C","carPress":"BAR"}}
  *
  * Node 8 compatible (the head unit's /usr/bin/node).
  */
@@ -29,7 +29,7 @@ const shader = require('./shader.js');
 const FONT = require('./font.js');
 const { TextCanvas } = require('./text.js');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const CLIENT = process.env.CLUSTER_RENDER_CLIENT || '/var/opt/cluster-render/current/cluster_render_client.js';
 const DATA_DIR = process.env.VITALS_DATA || '/var/opt/ida-vitals-cluster';
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
@@ -43,21 +43,21 @@ const DEFAULTS = {
     pressUnit: 'auto',     // auto (the car's), bar, psi, kPa
     coolantWarn: 115,      // C
     oilWarn: 135,          // C
+    gearboxWarn: 120,      // C
     accent: 'blue',        // blue, lightblue, white
     pressures: true,
-    backdrop: true,
     demo: false,
     target: 'vitals',
     fallbackTarget: 'widget',
     x: 805, y: 125,
 };
-const EDITABLE = ['tempUnit', 'pressUnit', 'coolantWarn', 'oilWarn', 'accent', 'pressures', 'backdrop', 'demo'];
+const EDITABLE = ['tempUnit', 'pressUnit', 'coolantWarn', 'oilWarn', 'gearboxWarn', 'accent', 'pressures', 'demo'];
 const CHOICES = {
     tempUnit: ['auto', 'C', 'F'],
     pressUnit: ['auto', 'bar', 'psi', 'kPa'],
     accent: ['blue', 'lightblue', 'white'],
 };
-const RANGES = { coolantWarn: [95, 130], oilWarn: [110, 150] };
+const RANGES = { coolantWarn: [95, 130], oilWarn: [110, 150], gearboxWarn: [100, 140] };
 
 function log(msg) { process.stdout.write(new Date().toISOString() + ' vitals: ' + msg + '\n'); }
 
@@ -69,7 +69,7 @@ function normalize(raw) {
         const v = out[k], r = RANGES[k];
         out[k] = typeof v === 'number' && isFinite(v) && v >= r[0] && v <= r[1] ? Math.round(v) : DEFAULTS[k];
     });
-    ['pressures', 'backdrop', 'demo'].forEach((k) => { out[k] = typeof out[k] === 'boolean' ? out[k] : DEFAULTS[k]; });
+    ['pressures', 'demo'].forEach((k) => { out[k] = typeof out[k] === 'boolean' ? out[k] : DEFAULTS[k]; });
     ['x', 'y'].forEach((k) => { const v = out[k]; out[k] = typeof v === 'number' && v >= 0 && v <= 2240 ? Math.round(v) : DEFAULTS[k]; });
     ['target', 'fallbackTarget'].forEach((k) => { if (typeof out[k] !== 'string' || !/^[a-z0-9]+$/.test(out[k])) out[k] = DEFAULTS[k]; });
     return out;
@@ -85,6 +85,7 @@ function cleanData(d, now) {
     };
     const out = {};
     if ('coolant' in d || 'oil' in d) { out.coolant = t(d.coolant, -40, 200); out.oil = t(d.oil, -40, 200); out.engineAt = now; }
+    if ('gearbox' in d) { out.gearbox = t(d.gearbox, -40, 200); out.gearboxAt = now; }
     if ('tyreT' in d) { out.tyreT = four(d.tyreT, -40, 200); out.tyresAt = now; }
     if ('tyreP' in d) { out.tyreP = four(d.tyreP, 0, 10); out.tyresAt = now; }
     if (d.carTemp === 'C' || d.carTemp === 'F') out.carTemp = d.carTemp;
@@ -138,7 +139,7 @@ function main() {
     try { if (!fs.existsSync(SETTINGS_FILE)) saveSettings(normalize({})); } catch (e) { log('could not write default settings: ' + e.message); }
     let S = loadSettings();
     let car = {};
-    const status = { version: VERSION, renderer: 'connecting', target: S.target, layer: 'none', engine: false, tyres: false };
+    const status = { version: VERSION, renderer: 'connecting', target: S.target, layer: 'none', engine: false, gearbox: false, tyres: false };
 
     let ClusterRender;
     try { ClusterRender = require(CLIENT).ClusterRender; } catch (e) {
@@ -185,7 +186,7 @@ function main() {
     function render(whole) {
         if (!layer) return;
         const v = view.compose(S, car, Date.now());
-        status.engine = v.engineOk; status.tyres = v.tyresOk;
+        status.engine = v.engineOk; status.gearbox = v.gearboxOk; status.tyres = v.tyresOk;
         Object.keys(v.uniforms).forEach((n) => {
             const vals = v.uniforms[n], key = vals.map((x) => x.toFixed(4)).join(' ');
             if (lastUni[n] === key) return;

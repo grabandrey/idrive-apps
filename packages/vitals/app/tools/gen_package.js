@@ -32,11 +32,11 @@ const STRINGS = { SID_VT_TITLE: 'Vitals' };
 const BUTTONS = [
     [21, 'vtTempUnit', 'Temperature unit'],
     [22, 'vtPressUnit', 'Pressure unit'],
-    [23, 'vtCoolantWarn', 'Coolant warning'],
-    [24, 'vtOilWarn', 'Oil warning'],
-    [25, 'vtAccent', 'Gauge colour'],
-    [26, 'vtPressures', 'Tyre pressures'],
-    [27, 'vtBackdrop', 'Dark backdrop'],
+    [23, 'vtCoolantWarn', 'Water warning'],
+    [24, 'vtOilWarn', 'Engine oil warning'],
+    [25, 'vtGearboxWarn', 'Gearbox oil warning'],
+    [26, 'vtAccent', 'Gauge colour'],
+    [27, 'vtPressures', 'Tyre pressures'],
     [28, 'vtDemo', 'Demo values'],
     [29, 'vtReset', 'Reset to defaults'],
 ];
@@ -116,7 +116,7 @@ fs.copyFileSync(path.join(ROOT, 'icon.png'), path.join(PKG, 'rhmiData/variantGro
 /* ---- package.json, manifest.json, permissions.json, config ---- */
 write('package.json', {
     name: ID, version: VERSION,
-    description: 'Coolant, oil and tyre temperatures for the Vitals cluster widget, and its settings',
+    description: 'Water, engine oil, gearbox oil and tyre temperatures for the Vitals cluster widget, and its settings',
     private: false,
     main: 'javascript/runner.js',
     oapAppSettings: {
@@ -155,6 +155,7 @@ write('manifest.json', {
         'de.bmw.infotainment.vehicle.CDS': { instances: ['1'], attributes: { statusEngineTemperature: 'rs' } },
         'de.bmw.infotainment.vehicle.TPMS': { instances: ['1'], attributes: { statusTyreTemperature: 'rs', statusTyrePressure: 'rs' } },
         'de.bmw.infotainment.vehicle.Vehicle': { instances: ['1'], attributes: { statusNewCurrentUnitsStatusExt: 'rs' } },
+        'de.bmw.infrastructure.analytics.BasicDataSet': { instances: ['1'], attributes: { basicDataSet: 'rs' } },
         'de.bmw.infotainment.personalization.SessionManager': { instances: '*', attributes: '*' },
     },
     services: { 'de.bmw.infotainment.telematic.oap.AppStatus': { instances: ['${userId}'] } },

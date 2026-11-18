@@ -145,7 +145,7 @@
           "rows": [
             {
               "PrimaryText": {
-                "value": "Coolant warning",
+                "value": "Water warning",
                 "type": "Text"
               },
               "FrequencyText": {
@@ -187,7 +187,7 @@
           "rows": [
             {
               "PrimaryText": {
-                "value": "Oil warning",
+                "value": "Engine oil warning",
                 "type": "Text"
               },
               "FrequencyText": {
@@ -214,6 +214,48 @@
           ]
         },
         "25": {
+          "type": "button",
+          "name": "vtGearboxWarn",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "Gearbox oil warning",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "26": {
           "type": "button",
           "name": "vtAccent",
           "properties": {
@@ -255,7 +297,7 @@
             }
           ]
         },
-        "26": {
+        "27": {
           "type": "button",
           "name": "vtPressures",
           "properties": {
@@ -272,48 +314,6 @@
             {
               "PrimaryText": {
                 "value": "Tyre pressures",
-                "type": "Text"
-              },
-              "FrequencyText": {
-                "value": "",
-                "type": "Text"
-              },
-              "FrequencyVisible": {
-                "value": false,
-                "type": "Bool"
-              },
-              "IconVisible": {
-                "value": false,
-                "type": "Bool"
-              },
-              "ProgressVisible": {
-                "value": false,
-                "type": "Bool"
-              },
-              "IsPlaying": {
-                "value": false,
-                "type": "Bool"
-              }
-            }
-          ]
-        },
-        "27": {
-          "type": "button",
-          "name": "vtBackdrop",
-          "properties": {
-            "Visible": {
-              "value": 1,
-              "type": "UInt"
-            },
-            "Focusable": {
-              "value": 3,
-              "type": "UInt"
-            }
-          },
-          "rows": [
-            {
-              "PrimaryText": {
-                "value": "Dark backdrop",
                 "type": "Text"
               },
               "FrequencyText": {

@@ -87,6 +87,14 @@
         "statusNewCurrentUnitsStatusExt": "rs"
       }
     },
+    "de.bmw.infrastructure.analytics.BasicDataSet": {
+      "instances": [
+        "1"
+      ],
+      "attributes": {
+        "basicDataSet": "rs"
+      }
+    },
     "de.bmw.infotainment.personalization.SessionManager": {
       "instances": "*",
       "attributes": "*"

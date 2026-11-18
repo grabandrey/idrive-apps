@@ -92,7 +92,7 @@ class Vitals extends OnlineApp {
             this._pending = {};
             // the status line says whether data arrives: ask again while the screen shows it
             const st = this._reply && this._reply.status;
-            if (this._visible && (!st || !st.engine || !st.tyres)) this._ctl.request({ op: 'get' });
+            if (this._visible && (!st || !st.engine || !st.gearbox || !st.tyres)) this._ctl.request({ op: 'get' });
         }
     }
 

@@ -1,14 +1,15 @@
-# Vitals: coolant, oil and tyre temperatures in the iDrive 8 cluster
+# Vitals: water, oil, gearbox and tyre temperatures in the iDrive 8 cluster
 
 A cluster widget for BMW iDrive 8, styled to match the car's own displays, installed from **MGU Store**.
 
 ![Vitals widget](tool/preview.png)
 
-- **Coolant** and **oil** temperature on thin arc gauges with a blue fill. A gauge turns red once its
-  temperature passes a warning point you choose.
-- **Tyres**: the car from above. Each tyre is coloured by its temperature (blue = cold, green = normal,
-  orange = warm, red = hot), with its temperature and pressure beside it.
+- **Water**, **engine oil** and **gearbox oil** temperature on bars of forward-slanted segments, like the
+  iDrive 8 cluster's own gauges, with a blue fill. A bar turns red once its temperature passes a warning point you choose (the red tick).
+- **Tyres**: the four tyres, front at the top, each coloured by its temperature (blue = cold, green = normal,
+  orange = warm, red = hot), with its temperature and pressure beside it, each with its unit.
 - °C / °F and bar / psi / kPa follow the car's own unit settings, or you can pick them yourself.
+- **No background of its own**: everything between the bars, tyres and numbers is transparent.
 - Its own **Vitals** entry in the cluster's widget menu, with BMW's own artwork in the middle blacked out
   behind it.
 - The **Vitals** app (Apps menu) reads the car's data and holds the settings.
@@ -23,13 +24,14 @@ A cluster widget for BMW iDrive 8, styled to match the car's own displays, insta
 
 ```
  car (SOME/IP)          Vitals app (app/)                         widget service (tool/)                       cluster
- CDS  engine temps  -->  reads via BMW's SDK, decodes to C/bar  -->  view + text + shader               -->  cluster-render
+ CDS  engine temps      -->  reads via BMW's SDK, decodes to C/bar  -->  view + text + shader               -->  cluster-render
+ BasicDataSet gearbox oil
  TPMS tyre temps/pressures   settings screen (Apps menu)   <-->     /run/ida-vitals-cluster/ctl.sock            widget "Vitals"
  Vehicle  display units
 ```
 
 - **The app** runs as an ordinary iDrive app with BMW's SDK, so it can read the car's data. It declares
-  `CDS.statusEngineTemperature`, `TPMS.statusTyreTemperature`, `TPMS.statusTyrePressure` and
+  `CDS.statusEngineTemperature`, `BasicDataSet.basicDataSet` (gearbox oil), `TPMS.statusTyreTemperature`, `TPMS.statusTyrePressure` and
   `Vehicle.statusNewCurrentUnitsStatusExt` in its `manifest.json`, and reads them through typed proxies.
   TPMS is also read every 5 s, because some cars answer reads but never send updates.
 - **The widget service** runs as a root tool without the SDK. It draws every shape on the GPU with one
@@ -52,9 +54,13 @@ BMW's own gauges**. BMW keeps drawing the speedometer, rev counter, warning ligh
 Until the restart, the widget draws on cluster-render's generic `widget` entry (listed as "Cluster renderer").
 
 **Data needs the app running.** The widget service has no access to the car's data itself. If the gauges show
-dashes, open the Vitals app: its status line says whether engine and tyre data are arriving. Engine values go
-to dashes 15 s after the last update (for example, with the car off). Tyre values last 3 minutes, because the
-tyre sensors report slowly and, on some cars, only while driving.
+dashes, open the Vitals app: its status line says whether engine, gearbox and tyre data are arriving. Engine values go
+to dashes 15 s after the last update (for example, with the car off), gearbox oil after a minute. Tyre values
+last 3 minutes, because the tyre sensors report slowly and, on some cars, only while driving.
+
+**Gearbox oil** comes from `BasicDataSet.valueTemperatureTransmissionOil`. Some cars never fill it in and send
+the same value forever, so the app shows it only once it has changed at least once. With the car started from
+cold that takes a minute or two. If it stays on dashes while you drive, your car doesn't send it.
 
 ## Settings (the Vitals app)
 
@@ -62,11 +68,11 @@ tyre sensors report slowly and, on some cars, only while driving.
 |---|---|
 | Temperature unit | Car setting → °C → °F |
 | Pressure unit | Car setting → bar → psi → kPa |
-| Coolant warning | 95 → 130 °C in 5° steps (default 115) |
-| Oil warning | 110 → 150 °C in 5° steps (default 135) |
+| Water warning | 95 → 130 °C in 5° steps (default 115) |
+| Engine oil warning | 110 → 150 °C in 5° steps (default 135) |
+| Gearbox oil warning | 100 → 140 °C in 5° steps (default 120) |
 | Gauge colour | Blue → Light blue → White |
 | Tyre pressures | Shown / Hidden |
-| Dark backdrop | On / Off |
 | Demo values | On / Off: a warm-up and a hot lap, to check the widget without driving |
 | Reset to defaults | everything back |
 
@@ -84,7 +90,7 @@ tool/                               the widget service (a root tool kit, id ida-
   view.js                           settings + car data -> uniforms and text (units, warnings, staleness, demo)
   layout.js                         the geometry, shared by the shader and the text
   shader.js                         builds the GLSL ES 1.00 fragment shader from layout.js
-  text.js                           text into 8-bit textures, with per-field dirty rectangles
+  text.js                           text (a unit right after its number) into 8-bit textures, with per-field dirty rectangles
   font.js                           baked Barlow glyphs (generated by scripts/bake_font.py)
   ida-vitals-cluster.service        systemd unit
   cluster-render.d/vitals.conf      cluster-render drop-in: the "Vitals" widget-menu entry
@@ -92,7 +98,7 @@ tool/                               the widget service (a root tool kit, id ida-
 app/                                the Vitals app (source package, id ida_vitals, built on the head unit)
   mgu-app.json                      id, version, modules, the oap-sdk modules it uses
   src/ida_vitals.js                 the app: settings screen, car data -> widget
-  src/car_data.js                   CDS / TPMS / Vehicle through typed SOME/IP proxies
+  src/car_data.js                   CDS / BasicDataSet / TPMS / Vehicle through typed SOME/IP proxies
   src/decode.js                     the car's raw values -> C and bar
   src/settings_model.js             the settings rows
   src/ctl_client.js                 the widget service's control socket
@@ -107,13 +113,14 @@ design/widget_preview.html          the widget in a browser, with the car's own 
 - `node packages/vitals/app/tools/gen_package.js`: after changing the app's screen, manifest or version.
 - `python scripts/bake_font.py`: after changing the font styles (needs Pillow).
 - Open `design/widget_preview.html` to see the widget with demo data. Add `?still&state=warm|cold|hot|nodata`
-  for fixed states, and `&t=F&p=psi&accent=lightblue` for other settings.
+  for fixed states, `&t=F&p=psi&accent=lightblue` for other settings, and `&bg=checker` to see the transparency.
 
 ## Credits
 
 Built on [cluster-render](https://github.com/robertnisipeanu/idrive-apps/tree/main/native/cluster-render) and
 [MGU Store](https://github.com/robertnisipeanu/mgu-store). The data fields and their scaling are as documented by the
-MIT-licensed [BMW cluster themes](https://github.com/shezj/bmw-cluter-themes) kit. Font: [Barlow](https://github.com/jpt/barlow)
+MIT-licensed [BMW cluster themes](https://github.com/shezj/bmw-cluter-themes) kit; the gearbox oil field as the
+[idrive7-apps](https://github.com/cauliflowermossgrape/idrive7-apps) kit reads it. Font: [Barlow](https://github.com/jpt/barlow)
 (SIL OFL 1.1).
 
 Not affiliated with BMW. No BMW artwork, fonts, logos or trademarks are used. The look is inspired by the car's own

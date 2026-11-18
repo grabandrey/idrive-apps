@@ -1,7 +1,7 @@
 {
   "name": "ida_vitals",
-  "version": "1.0.0",
-  "description": "Coolant, oil and tyre temperatures for the Vitals cluster widget, and its settings",
+  "version": "1.1.0",
+  "description": "Water, engine oil, gearbox oil and tyre temperatures for the Vitals cluster widget, and its settings",
   "private": false,
   "main": "javascript/runner.js",
   "oapAppSettings": {

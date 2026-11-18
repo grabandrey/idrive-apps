@@ -7,7 +7,7 @@ package in this repository.
 
 | Package | What it is | Head unit | Components | Status |
 |---|---|---|---|---|
-| [**Vitals**](packages/vitals) | Coolant, oil and tyre temperatures (and tyre pressures) in the middle of the cluster, styled like the car's own displays | iDrive 8 | `ida-vitals-cluster` (tool) · `ida_vitals` (app) | Experimental, untested on a car |
+| [**Vitals**](packages/vitals) | Water, engine oil and gearbox oil temperatures on M-style bars, and each tyre's temperature and pressure, in the middle of the cluster | iDrive 8 | `ida-vitals-cluster` (tool) · `ida_vitals` (app) | Experimental, untested on a car |
 
 <img src="packages/vitals/tool/preview.png" width="360" alt="Vitals widget">
 

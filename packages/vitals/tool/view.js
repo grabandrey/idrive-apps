@@ -3,8 +3,8 @@
  * compose() returns the shader's uniforms and the text fields (view -> pixels is text.js).
  *
  * Car data, as the Vitals app sends it (all metric, null = not known):
- *   { coolant: C, oil: C, tyreT: { FL, FR, RL, RR } C, tyreP: { FL, ... } bar,
- *     carTemp: 'C' | 'F', carPress: 'BAR' | 'KPA' | 'PSI', engineAt: ms, tyresAt: ms }
+ *   { coolant: C, oil: C, gearbox: C, tyreT: { FL, FR, RL, RR } C, tyreP: { FL, ... } bar,
+ *     carTemp: 'C' | 'F', carPress: 'BAR' | 'KPA' | 'PSI', engineAt: ms, gearboxAt: ms, tyresAt: ms }
  *
  * Works in Node (module.exports) and in a browser (window.VITALS_VIEW).
  */
@@ -12,6 +12,7 @@
     var L = typeof module !== 'undefined' && module.exports ? require('./layout.js') : root.VITALS_LAYOUT;
 
     var ENGINE_STALE_MS = 15000;     // CDS sends often; a quiet one means the car is off
+    var GEARBOX_STALE_MS = 60000;    // BasicDataSet comes less often
     var TYRES_STALE_MS = 180000;     // TPMS answers every few seconds at best, and only while rolling on some cars
 
     var ACCENTS = {
@@ -20,6 +21,8 @@
         white:     { a: [0.55, 0.57, 0.62], b: [0.96, 0.96, 0.98] },
     };
     var RED = [0.90, 0.17, 0.12];
+    var WARN_KEY = { coolant: 'coolantWarn', oil: 'oilWarn', gearbox: 'gearboxWarn' };
+    var UNI = { coolant: 'u_cool', oil: 'u_oil', gearbox: 'u_gbox' };
 
     /* tyre temperature bands, C: cold, normal, warm, hot */
     function tyreColour(c) {
@@ -45,9 +48,9 @@
         if (u === 'kPa') return String(Math.round(bar * 100));
         return bar.toFixed(1);
     }
-    function frac(c) {
+    function frac(c, g) {
         if (!num(c)) return 0;
-        return Math.max(0, Math.min(1, (c - L.arc.min) / (L.arc.max - L.arc.min)));
+        return Math.max(0, Math.min(1, (c - g.min) / (g.max - g.min)));
     }
 
     /* demo data: a warm-up and a drive, so every colour shows */
@@ -58,9 +61,10 @@
         return {
             coolant: 40 + 68 * warm + 3 * Math.sin(now / 4000),
             oil: 35 + 82 * warm + (t > 40 ? 22 * (t - 40) / 20 : 0),
+            gearbox: 30 + 58 * Math.min(1, t / 35) + (t > 40 ? 10 * (t - 40) / 20 : 0),
             tyreT: { FL: tyre(4, 0), FR: tyre(9, 1), RL: tyre(-2, 2), RR: tyre(1, 3) },
             tyreP: { FL: 2.3 + 0.3 * warm, FR: 2.3 + 0.32 * warm, RL: 2.5 + 0.3 * warm, RR: 2.5 + 0.28 * warm },
-            carTemp: 'C', carPress: 'BAR', engineAt: now, tyresAt: now,
+            carTemp: 'C', carPress: 'BAR', engineAt: now, gearboxAt: now, tyresAt: now,
         };
     }
 
@@ -68,55 +72,60 @@
     function compose(s, data, now) {
         var d = s.demo ? demoData(now) : (data || {});
         var engineOk = num(d.engineAt) && now - d.engineAt < ENGINE_STALE_MS;
+        var gearboxOk = num(d.gearboxAt) && now - d.gearboxAt < GEARBOX_STALE_MS;
         var tyresOk = num(d.tyresAt) && now - d.tyresAt < TYRES_STALE_MS;
-        var cool = engineOk && num(d.coolant) ? d.coolant : null;
-        var oil = engineOk && num(d.oil) ? d.oil : null;
+        var vals = {
+            coolant: engineOk && num(d.coolant) ? d.coolant : null,
+            oil: engineOk && num(d.oil) ? d.oil : null,
+            gearbox: gearboxOk && num(d.gearbox) ? d.gearbox : null,
+        };
         var tu = tempUnit(s, d), pu = pressUnit(s, d);
         var acc = ACCENTS[s.accent] || ACCENTS.blue;
-        var warnC = cool !== null && cool >= s.coolantWarn, warnO = oil !== null && oil >= s.oilWarn;
 
         var u = {
             u_size: [L.W, L.H],
-            u_bg: [s.backdrop ? 1 : 0],
             u_accA: acc.a, u_accB: acc.b,
-            u_cool: [frac(cool), cool === null ? 0 : 1, warnC ? 1 : 0],
-            u_oil: [frac(oil), oil === null ? 0 : 1, warnO ? 1 : 0],
-            u_warnAt: [frac(s.coolantWarn), frac(s.oilWarn)],
+            u_warnAt: L.gauges.map(function (g) { return frac(s[WARN_KEY[g.key]], g); }),
         };
+        L.gauges.forEach(function (g) {
+            var v = vals[g.key];
+            u[UNI[g.key]] = [frac(v, g), v === null ? 0 : 1, v !== null && v >= s[WARN_KEY[g.key]] ? 1 : 0];
+        });
         L.corners.forEach(function (c) {
             var t = tyresOk && d.tyreT && num(d.tyreT[c.key]) ? d.tyreT[c.key] : null;
             u['u_t' + c.key] = tyreColour(t);
         });
 
         var f = [];
-        var field = function (id, tex, style, x, y, align, text, spacing) {
-            f.push({ id: id, tex: tex, style: style, x: x, y: y, align: align, text: text, spacing: spacing || 0 });
+        var field = function (id, tex, style, x, y, align, text, spacing, suffix) {
+            f.push({ id: id, tex: tex, style: style, x: x, y: y, align: align, text: text, spacing: spacing || 0, suffix: suffix || null });
         };
+        /* a unit right after its number, fainter so it reads grey */
+        var unit = function (style, text, gap) { return { style: style, text: text, gap: gap, dim: 0.6 }; };
+        var B = L.bar;
         L.gauges.forEach(function (g) {
-            var v = g.key === 'coolant' ? cool : oil;
-            field(g.key + '.value', 'V', 'value', g.cx, g.cy + 22, 'center', fmtTemp(v, tu));
-            field(g.key + '.unit', 'L', 'unit', g.cx, g.cy + 52, 'center', '°' + tu);
-            field(g.key + '.label', 'L', 'label', g.cx, g.cy + 96, 'center', g.label, 2.2);
-            var lo = L.arc.min, hi = L.arc.max;
-            field(g.key + '.min', 'L', 'scale', g.cx - 84, g.cy + 80, 'center', String(Math.round(temp(lo, tu))));
-            field(g.key + '.max', 'L', 'scale', g.cx + 84, g.cy + 80, 'center', String(Math.round(temp(hi, tu))));
+            field(g.key + '.label', 'L', 'label', B.x0, g.y, 'left', g.label, 2.2);
+            field(g.key + '.value', 'V', 'value', B.valueX, g.y + 2, 'right', fmtTemp(vals[g.key], tu));
+            field(g.key + '.unit', 'L', 'unit', B.unitX, g.y + 2, 'left', '°' + tu);
         });
         field('tyres.head', 'L', 'label', L.divider.x0, L.tyreHead.y, 'left', 'TYRES', 2.2);
-        field('tyres.units', 'L', 'label', L.divider.x1, L.tyreHead.y, 'right',
-            (s.pressures ? '°' + tu + '  ·  ' + pu.toUpperCase() : '°' + tu), 1.2);
+        var T = L.tyre, TT = L.tyreText;
         L.corners.forEach(function (c) {
             var left = c.side === 'left';
-            var x = left ? L.tyreText.left : L.tyreText.right, al = left ? 'right' : 'left';
+            var x = left ? c.x - T.hw - TT.gap : c.x + T.hw + TT.gap, al = left ? 'right' : 'left';
             var t = tyresOk && d.tyreT ? d.tyreT[c.key] : null;
             var p = tyresOk && d.tyreP ? d.tyreP[c.key] : null;
-            field('tyre.' + c.key + '.t', 'V', 'tyre', x, c.y + (s.pressures ? 6 : 14), al, fmtTemp(t, tu));
-            field('tyre.' + c.key + '.p', 'V', 'unit', x, c.y + 34, al, s.pressures ? fmtPress(p, pu) : '');
+            field('tyre.' + c.key + '.t', 'V', 'value', x, c.y + (s.pressures ? TT.dyT : 14), al, fmtTemp(t, tu), 0,
+                unit('unit', '°' + tu, 4));
+            field('tyre.' + c.key + '.p', 'V', 'unit', x, c.y + TT.dyP, al, s.pressures ? fmtPress(p, pu) : '', 0,
+                unit('label', pu, 5));
         });
-        return { uniforms: u, fields: f, demo: !!s.demo, engineOk: engineOk, tyresOk: tyresOk };
+        return { uniforms: u, fields: f, demo: !!s.demo, engineOk: engineOk, gearboxOk: gearboxOk, tyresOk: tyresOk };
     }
 
     var API = { compose: compose, demoData: demoData, tyreColour: tyreColour, fmtTemp: fmtTemp, fmtPress: fmtPress,
-        frac: frac, ACCENTS: ACCENTS, RED: RED, ENGINE_STALE_MS: ENGINE_STALE_MS, TYRES_STALE_MS: TYRES_STALE_MS };
+        frac: frac, ACCENTS: ACCENTS, RED: RED, ENGINE_STALE_MS: ENGINE_STALE_MS, GEARBOX_STALE_MS: GEARBOX_STALE_MS,
+        TYRES_STALE_MS: TYRES_STALE_MS };
     if (typeof module !== 'undefined' && module.exports) module.exports = API;
     else root.VITALS_VIEW = API;
 })(this);

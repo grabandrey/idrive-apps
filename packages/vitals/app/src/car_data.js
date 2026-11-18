@@ -1,6 +1,6 @@
 'use strict';
 /*
- * Vitals: reads the car's temperatures and tyre data through BMW's SDK (typed SOME/IP
+ * Vitals: reads the car's temperatures (engine, gearbox) and tyre data through BMW's SDK (typed SOME/IP
  * proxies, as manifest.json declares them) and emits them as metric numbers.
  *
  *   const car = new CarData(logger); car.on('data', (partial) => ...); car.start();
@@ -16,6 +16,7 @@ const decode = require('./decode.js');
 const IF_CDS = 'de.bmw.infotainment.vehicle.CDS';
 const IF_TPMS = 'de.bmw.infotainment.vehicle.TPMS';
 const IF_VEHICLE = 'de.bmw.infotainment.vehicle.Vehicle';
+const IF_BASIC = 'de.bmw.infrastructure.analytics.BasicDataSet';
 const TPMS_POLL_MS = 5000;
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -28,7 +29,8 @@ class CarData extends EventEmitter {
         this.raw = { tyreT: null, tyreP: null };
         this.proxies = {};
         this.timers = [];
-        this.available = { engine: false, tyres: false };
+        this.available = { engine: false, gearbox: false, tyres: false };
+        this.gearboxFirst = null;           // the first raw gearbox value, until it changes
     }
 
     start() {
@@ -48,6 +50,20 @@ class CarData extends EventEmitter {
             statusEngineTemperature: (v) => {
                 this.available.engine = true;
                 this.emit('data', decode.engine(v));
+            },
+        }));
+        step(() => this._watch(IF_BASIC, '1', {
+            basicDataSet: (v) => {
+                const raw = v && v.valueTemperatureTransmissionOil;
+                if (typeof raw !== 'number' || raw === 255) return;
+                if (!this.available.gearbox) {
+                    // a value that never changes is a car that doesn't fill it in
+                    if (this.gearboxFirst === null) { this.gearboxFirst = raw; this.log.info('gearbox oil: first raw value ' + raw); return; }
+                    if (raw === this.gearboxFirst) return;
+                    this.available.gearbox = true;
+                    this.log.info('gearbox oil: moved to raw ' + raw + ', showing it');
+                }
+                this.emit('data', { gearbox: decode.gearbox(v) });
             },
         }));
         step(() => this._watch(IF_TPMS, '1', {
