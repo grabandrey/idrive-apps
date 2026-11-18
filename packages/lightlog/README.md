@@ -1,8 +1,9 @@
-# Light Logger: what switches the seat logos off
+# Light Logger: find what switches the seat logos off, and keep them on
 
-An iDrive 8 app for **finding out** why the illuminated logos in the seats (G87 M2 headrests) go dark once the
-car is started. It watches the car's interior light modules and logs every change next to the engine and the
-car's speed. It changes nothing on the car.
+An iDrive 8 app for the illuminated logos in the seats (G87 M2 headrests), which go dark once the car is started.
+It watches the car's interior lights and logs every change next to the engine and the car's speed, so you can
+find the body controller lamp output that switches the logos. Then **Keep on** can hold that output on while the
+car is on. Everything is read only except Keep on, which is off until you switch it on.
 
 > **⚠️ Experimental: not yet tested on a car.** It follows the documented MGU Store format and reads the light
 > modules the way the MIT-licensed [idrive7-apps](https://github.com/cauliflowermossgrape/idrive7-apps) kit's Ambient
@@ -60,8 +61,49 @@ the top. Touch works, and the controller moves between the buttons. Without the 
 plain list. **Show** steps through *Seat lights now*, *Seat light log*, *All lights now* and *Finder*, and the
 three Finder rows do the finder's steps.
 
-**Read only.** The app sends nothing but `ReadDataByIdentifier` (22) to one control unit. `uds.js` refuses
-anything else before it reaches the car, and the tests check that no other module sends requests.
+**Read only, except Keep on.** Logging and the finder send nothing but `ReadDataByIdentifier` (22). `uds.js`
+refuses anything else before it reaches the car, and the tests check that no module but `uds.js` builds requests.
+
+## Keep on
+
+Once you've found the logos' **lamp output** (on the G87 tested so far: **lamp output 45**), pin it under **All**.
+The **Keep on** panel at the bottom of **Seat** then offers:
+
+- **Test 10 s**: asks the body controller to hold that output on for 10 seconds, then hands it back. Try it first,
+  with the logos dark (engine running): they should light for 10 s. The panel and the log say whether the body
+  controller took it, or what it answered.
+- **Keep on: ON / OFF**: with it ON, the output is held on from the engine's first start until the engine has been
+  off for 2 minutes (so auto start-stop at the lights doesn't drop it), every drive. Your choice is kept.
+
+How, the way the MIT-licensed idrive7-apps kit drives these outputs:
+
+| Step | Request |
+|---|---|
+| the body controller's extended diagnostic session | `10 03` |
+| hold the output on | `2F E3B5 03 <element> 01` (`2F 4501 …` on older body controllers) |
+| keep the session, every 2 s | `3E 00` |
+| hand it back, then the default session | `2F E3B5 00 <element> 00`, `10 01` |
+
+The element is the output number minus one: **output 45 is element 44 (`0x2C`)**. The control identifier
+follows the one the lamp outputs were read with (`E3B9` → `E3B5`, `4500` → `4501`).
+
+`uds.js` allows exactly these requests, to the body controller only, and for the one output you pinned only;
+anything else is refused before it reaches the car (the tests try writes, routines, resets, other outputs and
+other units).
+
+What happens when:
+
+| Situation | What the app does |
+|---|---|
+| the output reads OFF twice while held | asks again (at most every 10 s) |
+| the session is lost (tester present refused) | opens it and asks again |
+| 5 refusals in a row | gives up and says so; switch Keep on off and on to try again |
+| engine off for 2 minutes, Keep on switched off, the app stopping | hands the output back and leaves the session |
+| the app crashes or the head unit stops | nothing is sent any more: the body controller ends the session after a few seconds and takes the output back by itself |
+
+> **⚠️ Untested on a car.** The body controller stays in a diagnostic session for the whole drive, which the kit only
+> ever does for seconds. It may refuse it, drop it, or log a fault; if anything behaves oddly, switch Keep on off.
+> If another lamp shares the output, it stays on too. Don't use a diagnostic tool on the car while Keep on holds.
 
 ## Install (MGU Store)
 
@@ -89,7 +131,7 @@ What the answer means:
 | What the log shows | What it means |
 |---|---|
 | A `SEAT` (or `Light 0x..`) module goes OFF at the mark | The logos are BDC ambient light modules. An app could switch them on again over the same link, and that's the next step |
-| A lamp output changes at the mark | The BDC switches the logos through a lamp output. Its number is the lead for coding or a keep-on app |
+| A lamp output changes at the mark | The BDC switches the logos through a lamp output: pin it and use **Keep on** |
 | Find lists a value that follows the logos | The unit that reports it (BDC or a seat module) knows the logos' state; pin it to confirm. Reading it doesn't switch anything, but it says where the switching happens |
 | Nothing changes anywhere | The logos are switched where the head unit can't see (wired straight to a seat or another unit). Coding or wiring is the route |
 | `the body controller refuses the read` / `stopped answering` | This car's BDC doesn't offer these reads (or another app holds the link). The log says which |
@@ -99,7 +141,8 @@ What the answer means:
 - On the screen: the seat lights and their events (or every module, with **All**).
 - A text file, `lightlog.txt`, in the first writable folder of the app's home, its working folder and the temp
   folder. The status line shows the path. It is restarted (the old one kept as `.1`) past 1 MB.
-- The app's log (`LTLG`), each line starting `LIGHT`, plus each bus's raw reply whenever it changes.
+- The app's log (`LTLG`), each line starting `LIGHT`, plus each bus's raw reply whenever it changes. Keep on's
+  steps are in it too, starting `KEEP`.
 
 ## Good to know
 
@@ -119,6 +162,7 @@ app/                         the app (source package, id ida_lightlog, built on 
   src/lin.js                 the BDC's light module records -> modules
   src/lamps.js               the BDC's lamp outputs, and pinned values, as modules
   src/finder.js              learn the units' values, snapshots ON / OFF, the values that follow the logos
+  src/keeper.js              keep on: holds the pinned lamp output on through the body controller
   src/journal.js             reads and car data -> events
   src/screen_model.js        what the screen shows: the seat lights, their log, the plain list's rows
   src/ui.js, src/ui_font.js  the drawn screen (draw ops for the renderer) and its glyphs (scripts/bake_font.py)

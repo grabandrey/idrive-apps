@@ -157,6 +157,7 @@ function fit(rec, style, s, maxW) {
 /* a light's colour as it glows: its rgb (white channel mixed in) at its brightness, grey when off */
 function glow(m) {
     if (!m.on) return C.track;
+    if (m.lamp || m.did) return [236, 240, 248, 255];
     const k = 0.35 + 0.65 * Math.max(0, Math.min(100, m.bright)) / 100, w = (m.white || 0) / 255;
     const ch = (v) => Math.round(Math.min(255, v + (255 - v) * w) * k);
     return [ch(m.r), ch(m.g), ch(m.b), 255];
@@ -196,7 +197,6 @@ function draw(rec, m) {
 
     /* ---- header ---- */
     rec.text('title', 'Light Logger', 90, 86, C.text);
-    rec.text('small', 'SEAT LOGOS  ·  READ ONLY', 450, 84, C.faint, 'left', 2);
     const markW = 420, readW = 250, by = 30, bh = 72;
     const markX = W - 90 - markW;
     button('llMark', m.marks ? 'MARK THIS MOMENT  (' + m.marks + ')' : 'MARK THIS MOMENT', markX, by, markW, bh, C.accent, C.text, 'strong');
@@ -210,9 +210,14 @@ function draw(rec, m) {
         else if (b.modules === null || b.modules === undefined) chips.push([BUS[i] + (b.reads ? ' no answer' : ' ...'), b.reads ? C.orange : C.faint]);
         else chips.push([BUS[i] + ' · ' + b.modules, C.green]);
     });
+    if (st.keep && st.keep.holding) chips.push(['Holding output ' + st.keep.output + ' on', C.green]);
     chips.push([st.engine === true ? 'Engine running' : st.engine === false ? 'Engine off' : 'Engine ?', st.engine ? C.green : C.faint]);
     if (st.kmh !== null && st.kmh !== undefined) chips.push([Math.round(st.kmh) + ' km/h', C.faint]);
     let cx = readX - 30;
+    // as many chips as fit right of the title, the speed first to go
+    const chipW = (c) => rec.width('small', c[0]) + 76 + 14;
+    while (chips.length > 1 && readX - 30 - chips.reduce((a, c) => a + chipW(c), 0) < 440) chips.splice(chips.length - 1, 1);
+    if (readX - 30 - chips.reduce((a, c) => a + chipW(c), 0) > 440 + rec.width('small', 'SEAT LOGOS') + 40) rec.text('small', 'SEAT LOGOS', 450, 84, C.faint, 'left', 2);
     chips.slice().reverse().forEach((ch) => {
         const w = rec.width('small', ch[0]) + 76;
         cx -= w;
@@ -248,13 +253,14 @@ function draw(rec, m) {
         if (!list.length) {
             (m.noSeat || []).forEach((t, i) => rec.text(i ? 'body' : 'strong', fit(rec, i ? 'body' : 'strong', t, L.w - 88), L.x + 44, L.y + 160 + i * 60 + (i ? 16 : 0), i ? C.dim : C.text));
         }
-        const rowH = 100, max = 5;
+        const rowH = 100, max = 3;
+        drawKeep(rec, m, L, targets);
         list.slice(0, max).forEach((mod, i) => {
             const y = L.y + 96 + i * (rowH + 4);
             rec.rrect(L.x + 24, y, L.w - 48, rowH, 18, C.tile);
             swatch(rec, L.x + 84, y + rowH / 2, 22, mod);
             rec.text('strong', fit(rec, 'strong', mod.name, 700), L.x + 140, y + 44, C.text);
-            const where = BUS[mod.bus] + ' #' + mod.nad + '  ·  0x' + hex2(mod.loc);
+            const where = mod.lamp ? 'BDC lamp output, element ' + (mod.nad - 1) + ' (0x' + hex2(mod.nad - 1) + ')' : mod.did ? 'a value the finder found' : BUS[mod.bus] + ' #' + mod.nad + '  ·  0x' + hex2(mod.loc);
             const ww = rec.text('small', where, L.x + 140, y + 82, C.faint);
             let tx = L.x + 140 + ww + 22;
             (mod.reasons || []).forEach((r) => {
@@ -265,7 +271,7 @@ function draw(rec, m) {
                 rec.text('small', t[0], tx + 14, y + 83, t[1]);
                 tx += w + 10;
             });
-            const state = mod.on ? 'ON  ' + mod.bright + ' %' : 'OFF';
+            const state = (mod.on ? 'ON' : 'OFF') + (mod.lamp || mod.did ? '  (' + mod.raw + ')' : mod.on ? '  ' + mod.bright + ' %' : '');
             rec.text('strong', state, L.x + L.w - 210, y + 62, mod.on ? C.text : C.dim, 'right');
             if (mod.fault) rec.text('small', 'FAULT', L.x + L.w - 210, y + 90, C.red, 'right');
             const pinned = (mod.reasons || []).indexOf('pinned') >= 0;
@@ -321,6 +327,31 @@ function draw(rec, m) {
         if (i < 10) rec.rect(R.x + 44, y + 14, R.w - 88, 1, C.line);
     });
     return { rec: rec, targets: targets };
+}
+
+/* keep on: the pinned lamp output held on through the body controller, at the bottom of the seat card */
+function drawKeep(rec, m, L, targets) {
+    const k = (m.status && m.status.keep) || {};
+    const x = L.x + 24, w = L.w - 48, h = 112, y = L.y + L.h - 24 - h;
+    rec.rrect(x, y, w, h, 20, k.holding ? [C.green[0], C.green[1], C.green[2], 34] : C.tile);
+    rec.text('head', 'KEEP ON', x + 28, y + 42, C.faint, 'left', 4);
+    if (!k.output) {
+        rec.text('body', 'Pin the logos\' lamp output (All, its pin) to keep it on.', x + 28, y + 86, C.dim);
+        return;
+    }
+    rec.text('strong', 'Lamp output ' + k.output, x + 200, y + 44, C.text);
+    rec.text('small', fit(rec, 'small', k.note || '', w - 640), x + 28, y + 88, k.holding ? C.green : k.fails ? C.orange : C.dim);
+    const btn = (key, label, bx, bw, fill, tc) => {
+        const by = y + (h - 64) / 2;
+        rec.rrect(bx, by, bw, 64, 32, m.focus === key ? C.tileFocus : fill);
+        rec.text('body', label, bx + bw / 2, by + 44, tc, 'center');
+        if (m.pressed === key) rec.rrect(bx, by, bw, 64, 32, [C.accent[0], C.accent[1], C.accent[2], 90]);
+        if (m.focus === key) rec.stroke(bx, by, bw, 64, 32, 4, C.accent);
+        targets.push({ key: key, x: bx, y: by, w: bw, h: 64 });
+    };
+    const kw = 300, tw = 250;
+    btn('llKeep', k.enabled ? 'Keep on: ON' : 'Keep on: OFF', x + w - 24 - kw, kw, k.enabled ? C.green : C.card, k.enabled ? C.bg : C.text);
+    btn('llKeepTest', k.mode === 'test' ? 'Testing...' : 'Test 10 s', x + w - 24 - kw - 20 - tw, tw, C.card, C.text);
 }
 
 /* the finder: three steps, then the values that follow the logos */

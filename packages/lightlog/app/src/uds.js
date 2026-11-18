@@ -9,8 +9,17 @@
  *            rejected by the transport (code in [4]), [6] = the address of the ECU that answered, the UDS reply
  *            from [9] on. 7F <sid> 78 = "response pending": the real reply comes later.
  *
- * READ ONLY: check() lets through ReadDataByIdentifier (22) of one to MAX_DIDS identifiers to one ECU and nothing
- * else, so this app cannot change anything on the car. The SOME/IP side (link) is passed in: someip_link.js on the car, a fake in the tests.
+ * Reads: check() lets through ReadDataByIdentifier (22) of one to MAX_DIDS identifiers to one ECU, nothing else.
+ *
+ * The one thing it may change (keeper.js, "keep the logos on", off until the driver switches it on): control()
+ * lets through exactly these, to the body controller (0x40) only, and only for the one lamp output allowControl()
+ * named (the output the driver pinned):
+ *   10 03 / 10 01                 extended diagnostic session / back to the default session
+ *   3E 00                         tester present (keeps the session)
+ *   2F <ctl> 03 <element> 01      hold that output on (shortTermAdjustment), <ctl> E3B5 (BDC_G05) or 4501 (BDC)
+ *   2F <ctl> 00 <element> 00      hand it back to the car (returnControlToECU)
+ * checkControl() refuses anything else before it reaches the car. If the app stops talking, the session times out
+ * after a few seconds and the body controller takes the output back by itself. The SOME/IP side (link) is passed in: someip_link.js on the car, a fake in the tests.
  *
  *   const uds = new Uds(link, log);  await uds.init();
  *   const reply = await uds.read(0x40, [0xDA, 0x5F]);   // 62 DA 5F ... | 7F 22 xx | null (no answer)
@@ -44,6 +53,26 @@ function check(target, sid, data) {
     }
 }
 
+const BDC = 0x40;
+const CONTROL_DIDS = [[0xe3, 0xb5], [0x45, 0x01]];
+
+/* throws unless it is one of the few requests the keeper may send (see the top of this file) */
+function checkControl(target, sid, data, allowed) {
+    const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+    if (target !== BDC) throw new Error('control: the body controller only');
+    if (!Array.isArray(data)) throw new Error('control: bad request');
+    if (sid === 0x10 && (same(data, [0x03]) || same(data, [0x01]))) return;
+    if (sid === 0x3e && same(data, [0x00])) return;
+    if (sid === 0x2f) {
+        if (!allowed) throw new Error('control: no output allowed');
+        const did = CONTROL_DIDS.find((d) => d[0] === data[0] && d[1] === data[1]);
+        if (!did || data.length !== 5 || data[3] !== allowed.element) throw new Error('control: only the allowed lamp output');
+        if ((data[2] === 0x03 && data[4] === 0x01) || (data[2] === 0x00 && data[4] === 0x00)) return;
+        throw new Error('control: only on, or back to the car');
+    }
+    throw new Error('control: service ' + sid + ' is not allowed');
+}
+
 /* a sendTasuResponse value -> { ecu, uds } | { reject: code } | { error } | null */
 function parseFrame(v) {
     const err = v && v.errorCode;
@@ -70,7 +99,9 @@ class Uds extends EventEmitter {
         this.link = link; this.log = log;
         this.ready = false; this.error = null;
         this.sent = 0; this.answered = 0; this.missed = 0;
-        this._busy = Promise.resolve();
+        this._queue = [];
+        this._running = false;
+        this._allowed = null;               // { element } the keeper may switch, null: none
     }
 
     init() {
@@ -87,19 +118,41 @@ class Uds extends EventEmitter {
         this.emit('frame', f);
     }
 
-    /* One read at a time (the transport takes one request at a time). Resolves with the ECU's UDS reply,
-     * or null when it didn't answer within timeoutMs (15 s more after each "pending"). */
-    read(target, did, timeoutMs) {
-        const run = () => this._read(target, did, timeoutMs || 15000);
-        const p = this._busy.then(run, run);
-        this._busy = p.catch(() => null);
-        return p;
+    /* one request at a time (the transport takes one at a time); urgent ones (the keeper's) go first */
+    _enqueue(fn, urgent) {
+        return new Promise((resolve, reject) => {
+            const job = { fn: fn, resolve: resolve, reject: reject };
+            if (urgent) this._queue.unshift(job); else this._queue.push(job);
+            this._pump();
+        });
+    }
+    _pump() {
+        if (this._running || !this._queue.length) return;
+        const job = this._queue.shift();
+        this._running = true;
+        let p;
+        try { p = Promise.resolve(job.fn()); } catch (e) { p = Promise.reject(e); }
+        p.then(job.resolve, job.reject).then(() => { this._running = false; this._pump(); });
     }
 
-    _read(target, did, timeoutMs) {
-        check(target, READ, did);
-        // a reply to several identifiers starts with the first one the ECU has
+    /* Resolves with the ECU's UDS reply, or null when it didn't answer within timeoutMs (more after each
+     * "pending"). Several identifiers: the reply starts with the first one the ECU has. */
+    read(target, did, timeoutMs) {
+        try { check(target, READ, did); } catch (e) { return Promise.reject(e); }
         const asked = (a, b) => { for (let i = 0; i < did.length; i += 2) if (did[i] === a && did[i + 1] === b) return true; return false; };
+        return this._enqueue(() => this._request(target, READ, did, timeoutMs || 15000, (u) => asked(u[1], u[2])));
+    }
+
+    /* the keeper's few requests (checkControl); only for the output allowControl() named */
+    allowControl(element) { this._allowed = Number.isInteger(element) && element >= 0 && element <= 255 ? { element: element } : null; }
+
+    control(target, sid, data, timeoutMs) {
+        try { checkControl(target, sid, data, this._allowed); } catch (e) { return Promise.reject(e); }
+        const echo = sid === 0x2f ? (u) => u[1] === data[0] && u[2] === data[1] : sid === 0x10 ? (u) => u[1] === data[0] : () => true;
+        return this._enqueue(() => this._request(target, sid, data, timeoutMs || 3000, echo), true);
+    }
+
+    _request(target, sid, data, timeoutMs, echo) {
         let timer, onFrame, onReject, finish, done = false;
         const got = new Promise((resolve) => {
             finish = (v) => {
@@ -112,20 +165,20 @@ class Uds extends EventEmitter {
             onFrame = (f) => {
                 if (f.ecu !== target) return;
                 const u = f.uds;
-                if (u[0] === 0x7f && u[1] === READ && u[2] === 0x78) {      // pending: wait longer
+                if (u[0] === 0x7f && u[1] === sid && u[2] === 0x78) {      // pending: wait longer
                     clearTimeout(timer); timer = setTimeout(() => finish(null), timeoutMs);
                     return;
                 }
-                if (u[0] === READ + 0x40 && asked(u[1], u[2])) finish(u);
-                else if (u[0] === 0x7f && u[1] === READ) finish(u);
+                if (u[0] === sid + 0x40 && echo(u)) finish(u);
+                else if (u[0] === 0x7f && u[1] === sid) finish(u);
             };
             onReject = () => finish(null);
             this.on('frame', onFrame); this.on('reject', onReject);
         });
         this.sent++;
         const req = {
-            sourceAddress: TESTER, targetAddress: target, serviceID: READ, subroutineID: 0,
-            udsDataLength: did.length, udsData: Buffer.from(did), deadlockTime: 0,
+            sourceAddress: TESTER, targetAddress: target, serviceID: sid, subroutineID: 0,
+            udsDataLength: data.length, udsData: Buffer.from(data), deadlockTime: 0,
         };
         return Promise.resolve()
             .then(() => this.link.call(IFACE, 'sendTasuRequest', req, 8000))
@@ -139,4 +192,4 @@ class Uds extends EventEmitter {
     }
 }
 
-module.exports = { Uds, IFACE, INSTANCE, MAX_DIDS, check, parseFrame, verdictOf, toBytes };
+module.exports = { Uds, IFACE, INSTANCE, MAX_DIDS, BDC, CONTROL_DIDS, check, checkControl, parseFrame, verdictOf, toBytes };

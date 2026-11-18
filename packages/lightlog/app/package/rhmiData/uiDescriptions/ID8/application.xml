@@ -28,6 +28,14 @@
                 <property id="2" value="1"/>
                 <property id="3" value="3"/>
             </component>
+            <component id="28" type="button" widget="LT_Button_MediaEntry_1Row">
+                <property id="2" value="1"/>
+                <property id="3" value="3"/>
+            </component>
+            <component id="29" type="button" widget="LT_Button_MediaEntry_1Row">
+                <property id="2" value="1"/>
+                <property id="3" value="3"/>
+            </component>
             <component id="25" type="button" widget="LT_Button_MediaEntry_1Row">
                 <property id="2" value="1"/>
                 <property id="3" value="3"/>

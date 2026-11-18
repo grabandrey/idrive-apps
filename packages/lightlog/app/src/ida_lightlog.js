@@ -12,6 +12,10 @@
  *     list underneath), else the HMI's own list (screen_model.js). A light can be pinned as a logo (touch); pins
  *     are kept in lightlog-pins.json next to the log file.
  *
+ * Keep on (keeper.js, off until the driver switches it on): holds the pinned lamp output on through the body
+ * controller, so the logos stay lit with the car on. The only requests that change anything; uds.js allows them
+ * for that one output only.
+ *
  * It starts with the head unit (package.json mguAppStartType autostart), so the welcome light at unlocking is in the
  * log before anyone opens it.
  *
@@ -31,6 +35,7 @@ const { LogFile } = require('./log_file.js');
 const screen = require('./screen_model.js');
 const lamps = require('./lamps.js');
 const { Finder } = require('./finder.js');
+const { Keeper } = require('./keeper.js');
 const { Gpu } = require('./gpu.js');
 const ui = require('./ui.js');
 
@@ -93,6 +98,11 @@ class LightLog extends OnlineApp {
             save: (o) => { try { if (findFile) fs.writeFileSync(findFile, JSON.stringify(o)); } catch (e) { logger.warn('finder not saved: ' + e.message); } },
         } });
         this._finder.on('change', () => { this._dirty = true; });
+        this._keepFile = this._file.path ? path.join(path.dirname(this._file.path), 'lightlog-keep.json') : null;
+        this._keeper = new Keeper({ uds: this._uds, log: logger });
+        this._keeper.on('note', (text) => this._journal.note('KEEP ' + text));
+        this._keeper.on('change', () => { this._dirty = true; });
+        try { if (this._keepFile && JSON.parse(fs.readFileSync(this._keepFile, 'utf8')).enabled === true) this._keeper.enabled = true; } catch (e) { /* off */ }
         this._journal.on('event', (e) => {
             const text = line(e);
             logger.info('LIGHT ' + text);
@@ -224,12 +234,38 @@ class LightLog extends OnlineApp {
         };
         return read(0, lin.readRequest(0), (u) => lin.parseStatus(0, u))
             .then(() => read(1, lin.readRequest(1), (u) => lin.parseStatus(1, u)))
-            .then(readLamps).then(readPinned).catch((e) => logger.warn('round: ' + (e && e.message)))
+            .then(readLamps).then(readPinned).then(() => this._keep()).catch((e) => logger.warn('round: ' + (e && e.message)))
             .then(() => {
                 this._polling = false;
                 this._dirty = true;
                 if (!this._shutdown) this._pollTimer = setTimeout(() => this._poll(), answered ? POLL_MS : SLOW_MS);
             });
+    }
+
+    /* ---- keep on ---- */
+    /* the pinned lamp output (the first, if several) */
+    _keepOutput() {
+        const k = Array.from(this._journal.pins).find((x) => /^2:\d+$/.test(x));
+        return k ? Number(k.slice(2)) : null;
+    }
+
+    /* each round: which output, the car's state, the output's latest value */
+    _keep() {
+        const out = this._keepOutput();
+        this._keeper.target({ output: out, statusDid: this._lampDid });
+        this._keeper.update({ engine: this._journal.engine });
+        const m = out === null ? null : this._journal.modules().find((x) => x.key === '2:' + out);
+        if (m) this._keeper.observe(m.value);
+    }
+
+    _keepPress(what) {
+        const k = this._keeper;
+        if (this._keepOutput() === null) { this._journal.note('KEEP pin the logos\' lamp output first (under All, tap its pin)'); return; }
+        this._keep();
+        if (what === 'test') { k.test(); return; }
+        k.setEnabled(!k.enabled);
+        try { if (this._keepFile) fs.writeFileSync(this._keepFile, JSON.stringify({ enabled: k.enabled })); } catch (e) { logger.warn('keep not saved: ' + e.message); }
+        this._keep();
     }
 
     /* ---- the finder ---- */
@@ -367,7 +403,8 @@ class LightLog extends OnlineApp {
 
     _statusData() {
         const j = this._journal;
-        return { linkReady: this._uds.ready, linkError: this._uds.error, buses: this._buses, engine: j.engine, kmh: j.kmh, file: this._file.path };
+        return { linkReady: this._uds.ready, linkError: this._uds.error, buses: this._buses, engine: j.engine, kmh: j.kmh, file: this._file.path,
+            keep: Object.assign(this._keeper.state, { output: this._keepOutput() }) };
     }
 
     _frame() {
@@ -413,6 +450,8 @@ class LightLog extends OnlineApp {
         if (b.name === 'llMark') this._journal.mark();
         else if (b.name === 'llRead') { this._journal.note('read asked for on the screen'); this._poll(); }
         else if (b.name === 'llView') this._view = this._drawn() ? screen.nextDrawnView(this._view) : screen.nextView(this._view);
+        else if (b.name === 'llKeepTest') this._keepPress('test');
+        else if (b.name === 'llKeep') this._keepPress('toggle');
         else if (b.name === 'llLearn') { this._view = 'find'; this._find('learn'); }
         else if (b.name === 'llSnapOn') { this._view = 'find'; this._find('on'); }
         else if (b.name === 'llSnapOff') { this._view = 'find'; this._find('off'); }
@@ -437,7 +476,7 @@ class LightLog extends OnlineApp {
         this._set(STATUS, 'Text', screen.status(this._statusData()));
         screen.BUTTONS.forEach((b) => {
             this._set(b.name, 'PrimaryText', b.label);
-            const v = b.name === 'llView' ? screen.viewLabel(this._view) : b.name === 'llMark' && j.marks ? j.marks + ' so far' : '';
+            const v = screen.buttonValue(b.name, this._statusData(), this._view, j.marks);
             this._set(b.name, 'FrequencyText', v);
             this._set(b.name, 'FrequencyVisible', !!v);
         });
@@ -455,7 +494,7 @@ class LightLog extends OnlineApp {
         clearInterval(this._ui.timer);
         if (this._gpu) this._gpu.close();
         this._link.stop();
-        this._shutdown = Promise.resolve()
+        this._shutdown = within(this._keeper.release('the app is stopping'), 2000, 'keep on: hand back')
             .then(() => this.destroyBundles().catch((err) => logger.info('destroyBundles: ' + (err && err.message))))
             .then(() => process.exit(0));
         return this._shutdown;

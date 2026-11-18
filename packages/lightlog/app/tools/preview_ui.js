@@ -41,9 +41,10 @@ t += 21000; j.rpm({ actualValueRPMEngineCrankshaft: 2880 });
 if (variant !== 'empty') {
     t += 18000; j.lights(0, lin.parseStatus(0, reply(0, bus0(false))));
     t += 3000; j.mark();
-    j.togglePin('1:43');
+    j.togglePin('2:5');
 }
-const st = { linkReady: true, buses: [{ modules: 7, on: 6, reads: 12 }, { modules: 6, on: 6, reads: 12 }, { modules: 24, on: 8, reads: 12 }, {}], engine: true, kmh: 0 };
+const keep = variant === 'empty' ? {} : { output: 5, enabled: true, holding: true, mode: 'keep', fails: 0, note: 'holding lamp output 5 on (the body controller took it)' };
+const st = { keep: keep, linkReady: true, buses: [{ modules: 7, on: 6, reads: 12 }, { modules: 6, on: 6, reads: 12 }, { modules: 24, on: 8, reads: 12 }, {}], engine: true, kmh: 0 };
 /* the finder, learned, with two snapshots each */
 const finder = new Finder({ uds: null, log: { info() {}, warn() {} } });
 finder.units = [0x40, 0x6d];

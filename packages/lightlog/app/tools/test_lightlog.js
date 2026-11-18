@@ -98,6 +98,25 @@ tests.push(() => {
     return u.init().then(() => u.read(0x40, [0xda, 0x5f], 30)).then(() => ok(false, 'never'), (e) => ok(/refused/.test(e.message), 'transport refusal rejects'));
 });
 
+/* ---- keep on: the allow-list ---- */
+const A = { element: 44 };
+uds.checkControl(0x40, 0x10, [0x03], A); uds.checkControl(0x40, 0x10, [0x01], A); uds.checkControl(0x40, 0x3e, [0x00], A); n += 3;
+uds.checkControl(0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x01], A); uds.checkControl(0x40, 0x2f, [0xe3, 0xb5, 0x00, 0x2c, 0x00], A); n += 2;
+uds.checkControl(0x40, 0x2f, [0x45, 0x01, 0x03, 0x2c, 0x01], A); n++;
+[
+    [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2d, 0x01], A, 'another output'],
+    [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x02], A, 'another state'],
+    [0x40, 0x2f, [0xe3, 0xb5, 0x00, 0x2c, 0x01], A, 'back to the car, but on'],
+    [0x40, 0x2f, [0xe3, 0xb4, 0x03, 0x2c, 0x01], A, 'another identifier'],
+    [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x01, 0x00], A, 'longer'],
+    [0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2c, 0x01], null, 'no output allowed'],
+    [0x41, 0x10, [0x03], A, 'another unit'],
+    [0x40, 0x10, [0x02], A, 'programming session'],
+    [0x40, 0x11, [0x01], A, 'reset'], [0x40, 0x2e, [0xda, 0x5e, 1, 1, 100, 1, 1, 1, 10], A, 'a write'],
+    [0x40, 0x31, [0x01, 0xa5, 0x43], A, 'a routine'], [0x40, 0x14, [0xff, 0xff, 0xff], A, 'clearing faults'],
+    [0x40, 0x3e, [0x80], A, 'tester present without its reply'],
+].forEach((c) => { assert.throws(() => uds.checkControl(c[0], c[1], c[2], c[3]), /control/, c[4]); n++; });
+
 /* ---- the journal ---- */
 let t = Date.UTC(2026, 10, 18, 12, 0, 0);
 const j = new Journal({ now: () => t });
@@ -165,10 +184,11 @@ k.setPins(['1:27', 'junk', '0:90']);
 ok(Array.from(k.pins).join() === '1:27,0:90', 'pins checked when loaded');
 
 /* ---- the drawn screen ---- */
-const st2 = { linkReady: true, buses: [{ modules: 2, on: 1 }, { modules: 1, on: 1 }], engine: true, kmh: 12 };
+ok(screen.buttonValue('llKeep', { keep: { output: 45, enabled: true, holding: true } }) === 'ON, holding output 45' && screen.buttonValue('llKeep', {}) === 'pin the output first', 'keep: list values');
+const st2 = { keep: { output: 13 }, linkReady: true, buses: [{ modules: 2, on: 1 }, { modules: 1, on: 1 }], engine: true, kmh: 12 };
 const drawn = ui.draw(new ui.Recorder(), screen.drawModel(k, st2, 'seat', 'llMark', null));
 const keys = drawn.targets.map((x) => x.key);
-['llMark', 'llRead', 'view:seat', 'view:all', 'view:find', 'llClear', 'pin:0:13'].forEach((x) => ok(keys.indexOf(x) >= 0, 'drawn: ' + x));
+['llMark', 'llRead', 'view:seat', 'view:all', 'view:find', 'llClear', 'pin:0:13', 'llKeep', 'llKeepTest'].forEach((x) => ok(keys.indexOf(x) >= 0, 'drawn: ' + x));
 ok(drawn.targets.every((x) => x.x >= 0 && x.y >= 0 && x.x + x.w <= ui.W && x.y + x.h <= ui.H), 'drawn: targets on screen');
 ok(drawn.rec.n > 100 && drawn.rec.atlases.length >= 2, 'drawn: ops and glyphs');
 ok(ui.hit(drawn.targets, drawn.targets[0].x + 2, drawn.targets[0].y + 2).key === drawn.targets[0].key, 'hit');
@@ -178,7 +198,7 @@ const r0 = new ui.Recorder();
 ok(ui.fit(r0, 'small', 'x'.repeat(400), 300).slice(-3) === '...' && r0.width('small', ui.fit(r0, 'small', 'x'.repeat(400), 300)) <= 300, 'fit');
 ok(ui.glow({ on: false }).join() === '44,48,58,255' && ui.glow({ on: true, bright: 100, r: 255, g: 0, b: 0, white: 0 })[0] === 255, 'glow');
 const emptyDrawn = ui.draw(new ui.Recorder(), screen.drawModel(new Journal(), { buses: [{}, {}] }, 'seat', null, null));
-ok(emptyDrawn.targets.length === 6, 'drawn before any answer: just the buttons');
+ok(emptyDrawn.targets.length === 6 && !emptyDrawn.targets.some((x) => x.key === 'llKeep'), 'drawn before any answer: just the buttons');
 
 /* ---- the BDC's lamp outputs ---- */
 const lampReply = [0x62, 0xe3, 0xb9, 0x00, 0x01, 0x64, 0x00];
@@ -202,6 +222,99 @@ ok(jl.pinnedValues().join() === 'd:6D:D123', 'value pins');
 jl.lights(3, [vm]);
 ok(jl.relevant()[0].key === 'd:6D:D123' && jl.relevant()[0].reasons[0] === 'pinned', 'pinned value first');
 ok(screen.lines('all', jl).some((x) => /BDC lamp output 3: on \(32\)/.test(x)), 'all view: lamp outputs');
+
+/* ---- keep on, against a fake body controller ---- */
+const { Keeper } = require('../src/keeper.js');
+function fakeBdc() {
+    const b = { session: 1, held: null, log: [], refuse: null, dropSession: false };
+    b.answer = (req) => {
+        const d = Array.from(Buffer.from(req.udsData)), sid = req.serviceID;
+        b.log.push([sid].concat(d).map((x) => (x < 16 ? '0' : '') + x.toString(16).toUpperCase()).join(' '));
+        const out = (uds) => [{ ecu: 0x40, uds: uds }];
+        if (b.refuse && b.refuse.sid === sid) return out([0x7f, sid, b.refuse.nrc]);
+        if (sid === 0x10) { b.session = d[0]; if (d[0] === 1) b.held = null; return out([0x50, d[0], 0, 0x32, 1, 0xf4]); }
+        if (sid === 0x3e) return b.dropSession || b.session !== 3 ? out([0x7f, 0x3e, 0x7f]) : out([0x7e, 0x00]);
+        if (sid === 0x2f) {
+            if (b.session !== 3) return out([0x7f, 0x2f, 0x7f]);
+            b.held = d[2] === 3 ? d[3] : null;
+            return out([0x6f, d[0], d[1], d[2], d[3]]);
+        }
+        return out([0x7f, sid, 0x11]);
+    };
+    return b;
+}
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+tests.push(() => {
+    const bdc = fakeBdc();
+    const u = new uds.Uds(fakeLink(bdc.answer), log);
+    let clock = 1e6;
+    const k = new Keeper({ uds: u, log, now: () => clock, keepaliveMs: 15, testMs: 60, graceMs: 1000 });
+    const notes = []; k.on('note', (x) => notes.push(x));
+    return u.init().then(() => {
+        ok(!k.state.ready && k.test() && /Pin the logos/.test(notes.pop()), 'keep: nothing without a pinned output');
+        k.target({ output: 45, statusDid: [0xe3, 0xb9] });
+        ok(k.state.ready && k.element === 44 && k.ctl.join() === '227,181', 'keep: output 45 = element 44 (0x2C), E3B9 -> E3B5');
+        return u.control(0x40, 0x2f, [0xe3, 0xb5, 0x03, 0x2d, 0x01]).then(() => ok(false, 'never'), () => ok(true, 'keep: the link refuses other outputs'));
+    }).then(() => k.test()).then((took) => {
+        ok(took && k.holding && bdc.held === 0x2c && k.mode === 'test', 'keep: test holds element 0x2C on');
+        ok(bdc.log.slice(0, 2).join('|') === '10 03|2F E3 B5 03 2C 01', 'keep: session, then hold on');
+        return wait(120);
+    }).then(() => {
+        ok(bdc.log.some((x) => x === '3E 00'), 'keep: tester present while held');
+        ok(!k.holding && k.mode === 'off' && bdc.held === null && bdc.session === 1, 'keep: test over, handed back');
+        ok(bdc.log.slice(-2).join('|') === '2F E3 B5 00 2C 00|10 01', 'keep: hand back, then the default session');
+        // enabled: nothing until the engine runs
+        k.setEnabled(true); bdc.log = [];
+        k.update({ engine: false });
+        ok(!bdc.log.length && k.mode === 'off', 'keep: waits for the car');
+        k.update({ engine: true });
+        return wait(30);
+    }).then(() => {
+        ok(k.holding && k.mode === 'keep' && bdc.held === 0x2c, 'keep: holds with the engine running');
+        // the output reads off twice (the BDC let it go): asked again
+        clock += 20000; bdc.log = [];
+        k.observe(0); ok(!bdc.log.length, 'keep: one off read is not enough'); k.observe(0);
+        return wait(20);
+    }).then(() => {
+        ok(bdc.log.slice(0, 2).join('|') === '10 03|2F E3 B5 03 2C 01', 'keep: off twice while held, asked again');
+        // the session is lost: tester present refused, asked again
+        clock += 20000; bdc.dropSession = true; bdc.log = [];
+        return wait(30);
+    }).then(() => {
+        bdc.dropSession = false;
+        ok(bdc.log.indexOf('10 03') > 0 && k.holding, 'keep: session lost, asked again');
+        // auto start-stop: a short stop keeps it, a long one lets it go
+        k.update({ engine: false }); clock += 500; k.update({ engine: false });
+        ok(k.mode === 'keep', 'keep: a short engine stop keeps it');
+        clock += 1000; k.update({ engine: false });
+        return wait(30);
+    }).then(() => {
+        ok(k.mode === 'off' && bdc.held === null && bdc.session === 1 && /the car is off/.test(k.note), 'keep: the car off, handed back');
+        k.update({ engine: true });
+        return wait(30);
+    }).then(() => {
+        ok(k.holding, 'keep: the next drive, held again');
+        k.setEnabled(false);
+        return wait(30);
+    }).then(() => {
+        ok(!k.holding && bdc.held === null && /switched off/.test(k.note), 'keep: switched off, handed back');
+        // refusals: given up after MAX_FAILS
+        bdc.refuse = { sid: 0x2f, nrc: 0x22 }; bdc.log = [];
+        k.setEnabled(true);
+        let p = Promise.resolve();
+        for (let i = 0; i < 7; i++) p = p.then(() => { k.update({ engine: true }); return wait(15); });
+        return p;
+    }).then(() => {
+        ok(k.fails === 5 && !k.holding && bdc.log.filter((x) => /^2F/.test(x)).length === 5 && /Gave up/.test(notes.join('|')), 'keep: gives up after 5 refusals');
+        ok(/conditions not correct/.test(notes.join('|')), 'keep: the refusal named');
+        bdc.refuse = null;
+        k.target({ output: 45, statusDid: [0x45, 0x00] });
+        ok(k.ctl.join() === '69,1', 'keep: 4500 -> 4501');
+        k.target({ output: null });
+        ok(!k.state.ready, 'keep: unpinned, nothing to hold');
+        return u.control(0x40, 0x2f, [0x45, 0x01, 0x03, 0x2c, 0x01]).then(() => ok(false, 'never'), () => ok(true, 'keep: unpinned, the link allows no output'));
+    });
+});
 
 /* ---- the finder, against a fake car ---- */
 // the BDC has D100 (1 byte, follows the logos), D101 (2 bytes, moves anyway), D108 (1 byte, constant); seat module 0x6D
@@ -260,8 +373,11 @@ app.modules.forEach((m) => {
         ok(r[0] === '.' || app.sdk.indexOf(r) >= 0 || ['events', 'fs', 'path', 'os', 'net'].indexOf(r) >= 0, m + ': may require ' + r);
     });
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '');
-    if (m === 'src/uds.js') ok((code.match(/serviceID:\s*\w+/g) || []).join() === 'serviceID: READ', 'uds.js sends ReadDataByIdentifier only');
-    else ok(code.indexOf('serviceID') < 0, m + ': requests only through uds.js');
+    if (m === 'src/uds.js') {
+        ok((code.match(/serviceID:\s*\w+/g) || []).join() === 'serviceID: sid', 'uds.js: one place builds requests');
+        ok((code.match(/this\._request\(/g) || []).length === 2 && /check\(target, READ, did\)/.test(code) && /checkControl\(target, sid, data, this\._allowed\)/.test(code), 'uds.js: every request checked first');
+    } else ok(code.indexOf('serviceID') < 0 && code.indexOf('_request(') < 0, m + ': requests only through uds.js');
+    if (['src/keeper.js', 'src/ida_lightlog.js', 'src/uds.js'].indexOf(m) < 0) ok(!/\.control\(|allowControl/.test(code), m + ': no control requests');
 });
 const man = JSON.parse(fs.readFileSync(path.join(ROOT, 'package', 'manifest.json'), 'utf8')).proxies;
 const tasu = man['com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu'];

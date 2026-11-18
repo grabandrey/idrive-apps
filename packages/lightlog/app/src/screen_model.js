@@ -21,6 +21,8 @@ const BUTTONS = [
     { id: 22, name: 'llRead', label: 'Read the lights now' },
     { id: 23, name: 'llView', label: 'Show' },
     { id: 24, name: 'llClear', label: 'Clear the log on screen' },
+    { id: 28, name: 'llKeep', label: 'Keep the logos on' },
+    { id: 29, name: 'llKeepTest', label: 'Keep on: test for 10 s' },
     { id: 25, name: 'llLearn', label: 'Finder: learn what the units report' },
     { id: 26, name: 'llSnapOn', label: 'Finder: snapshot, logos ON' },
     { id: 27, name: 'llSnapOff', label: 'Finder: snapshot, logos OFF' },
@@ -39,6 +41,7 @@ function status(s) {
     });
     parts.push(s.engine === true ? 'engine running' : s.engine === false ? 'engine off' : 'engine ?');
     if (s.kmh !== null && s.kmh !== undefined) parts.push(Math.round(s.kmh) + ' km/h');
+    if (s.keep && s.keep.holding) parts.push('KEEPING lamp output ' + s.keep.output + ' ON');
     parts.push(s.file ? 'file ' + s.file : 'no log file');
     return parts.join('  |  ');
 }
@@ -85,6 +88,16 @@ function findText(f) {
     return out;
 }
 
+/* the value shown beside a button in the plain list */
+function buttonValue(name, st, view, marks) {
+    const k = st && st.keep;
+    if (name === 'llView') return viewLabel(view);
+    if (name === 'llMark') return marks ? marks + ' so far' : '';
+    if (name === 'llKeep') return k && k.output ? (k.enabled ? (k.holding ? 'ON, holding output ' + k.output : 'ON, waiting for the car') : 'Off') : 'pin the output first';
+    if (name === 'llKeepTest') return k && k.mode === 'test' ? 'testing' : '';
+    return '';
+}
+
 /* the LINES rows' texts */
 function lines(view, journal, finder) {
     let out;
@@ -115,4 +128,4 @@ function drawModel(journal, st, view, focus, pressed, finder, page) {
     };
 }
 
-module.exports = { drawModel, LINES, BUTTONS, LINE_IDS, VIEWS, DRAWN_VIEWS, REASONS, status, lines, viewLabel, nextView, nextDrawnView, tags, noSeatText, findText };
+module.exports = { buttonValue, drawModel, LINES, BUTTONS, LINE_IDS, VIEWS, DRAWN_VIEWS, REASONS, status, lines, viewLabel, nextView, nextDrawnView, tags, noSeatText, findText };
