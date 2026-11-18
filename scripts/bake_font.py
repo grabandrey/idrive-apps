@@ -11,6 +11,7 @@ Barlow: SIL Open Font License 1.1 (shared/fonts/OFL-Barlow.txt).
 import base64
 import json
 import os
+import shutil
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -19,6 +20,7 @@ FONTS = os.path.join(ROOT, "shared", "fonts")
 OUT = os.path.join(ROOT, "packages", "vitals", "tool", "font.js")
 APP_OUT = os.path.join(ROOT, "packages", "vitals", "app", "src", "ui_font.js")
 LIGHTLOG_OUT = os.path.join(ROOT, "packages", "lightlog", "app", "src", "ui_font.js")
+SEATLIGHTS_OUT = os.path.join(ROOT, "packages", "seatlights", "app", "src", "ui_font.js")   # the same glyphs
 
 STYLES = {
     # name: (file, px)
@@ -86,6 +88,8 @@ def main():
         f.write(" * The Light Logger screen's glyphs: style -> { px, ascent, descent, glyphs: { char: [advance, x, y, w, h, base64] } } */\n")
         f.write("module.exports = " + json.dumps(lightlog, separators=(",", ":"), ensure_ascii=True) + ";\n")
     print("wrote", LIGHTLOG_OUT, os.path.getsize(LIGHTLOG_OUT), "bytes")
+    shutil.copyfile(LIGHTLOG_OUT, SEATLIGHTS_OUT)
+    print("wrote", SEATLIGHTS_OUT, "(a copy)")
 
 
 if __name__ == "__main__":

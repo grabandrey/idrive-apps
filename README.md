@@ -9,6 +9,7 @@ package in this repository.
 |---|---|---|---|---|
 | [**Vitals**](packages/vitals) | Water, engine oil and gearbox oil temperatures on M-style bars, and each tyre's temperature and pressure, in the middle of the cluster | iDrive 8 | `ida-vitals-cluster` (tool) · `ida_vitals` (app) | Experimental, untested on a car |
 | [**Light Logger**](packages/lightlog) | Finds what switches the seat logos off (the lights that may be them, the body controller's lamp outputs, a finder), then **Keep on** holds that lamp output on while the car is on | iDrive 8 | `ida_lightlog` (app) | Experimental, untested on a car |
+| [**Seat Lights**](packages/seatlights) | One switch that keeps the seat (headrest) logos lit with the car on, until you switch it off | iDrive 8 | `ida_seatlights` (app) | Experimental; the hold itself tested on a G87 M2 with Light Logger |
 
 <img src="packages/vitals/tool/preview.png" width="360" alt="Vitals widget">
 

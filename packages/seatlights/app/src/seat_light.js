@@ -1,0 +1,253 @@
+'use strict';
+/*
+ * Seat Lights: holds the seat (headrest) logos on through the body controller, for as long as the switch is ON.
+ * Tested on a desktop by tools/test_seatlights.js, against a fake body controller.
+ *
+ * On the G87 the logos hang on the BDC's lamp output 45 (found with Light Logger): element 44 (0x2C), the
+ * output number minus one. How, the way Light Logger's Keep on does it (the MIT-licensed idrive7-apps kit's way):
+ *   10 03                       the body controller's extended diagnostic session
+ *   2F <ctl> <layout, on>       hold the output on; <ctl> E3B5 when the lamp outputs read with E3B9, 4501 with 4500
+ *   3E 00 every KEEPALIVE_MS    keeps the session; if the app stops, the BDC ends it after a few seconds and takes
+ *                               the output back by itself
+ *   2F <ctl> <layout, back>     hand it back (switch OFF, the app stopping), then 10 01
+ * The record layout: the G87 refused the kit's 03 <el> 01 with "bad length", so the first time the switch goes ON
+ * it tries uds.js FORMATS in turn, with the logos dark, and keeps the first one the body controller takes that
+ * lights the output (read back) with nothing else switching on. The layout is saved.
+ *
+ * While ON, every CHECK_MS it reads the lamp outputs: the output off twice in a row, or the session lost, and it
+ * asks again. MAX_FAILS refusals in a row and it gives up: the switch goes OFF and says why.
+ *
+ *   const s = new SeatLight({ uds, log, output: 45, layout, statusDid });
+ *   s.setOn(true | false)      s.state -> { on, holding, note, warn, layout, output }      s.stop()
+ *   s.on('change'), s.on('save', { on, layout, statusDid })
+ */
+const EventEmitter = require('events');
+const { FORMATS } = require('./uds.js');
+const lamps = require('./lamps.js');
+
+const BDC = 0x40;
+const OUTPUT = 45;
+const KEEPALIVE_MS = 2000;
+const CHECK_MS = 5000;
+const SETTLE_MS = 700;
+const MAX_FAILS = 5;
+const STATUS_DIDS = [[0xe3, 0xb9], [0x45, 0x00]];
+const CONTROL = { 'E3B9': [0xe3, 0xb5], '4500': [0x45, 0x01] };
+const NEXT_LAYOUT = [0x12, 0x13, 0x31];
+const NRC = {
+    0x10: 'general reject', 0x11: 'service not supported', 0x12: 'sub-function not supported', 0x13: 'bad length',
+    0x21: 'busy', 0x22: 'conditions not correct', 0x31: 'out of range', 0x33: 'security access denied',
+    0x7e: 'not supported in this session', 0x7f: 'not supported in this session',
+};
+const hex = (b) => (b || []).map((x) => (x < 16 ? '0' : '') + x.toString(16).toUpperCase()).join(' ');
+const why = (r) => (!r ? 'no answer' : r[0] === 0x7f ? 'refused: ' + (NRC[r[2]] || 'NRC 0x' + hex([r[2]])) : 'answer ' + hex(r.slice(0, 4)));
+const key = (did) => hex(did).replace(' ', '');
+
+class SeatLight extends EventEmitter {
+    constructor(o) {
+        super();
+        this.uds = o.uds; this.log = o.log; this.now = o.now || Date.now;
+        this.output = o.output || OUTPUT;
+        this.element = this.output - 1;
+        this.keepaliveMs = o.keepaliveMs || KEEPALIVE_MS;
+        this.checkMs = o.checkMs || CHECK_MS;
+        this.settleMs = o.settleMs === undefined ? SETTLE_MS : o.settleMs;
+        this.layout = Number.isInteger(o.layout) && FORMATS[o.layout] ? o.layout : null;
+        this.statusDid = Array.isArray(o.statusDid) && CONTROL[key(o.statusDid)] ? o.statusDid : null;
+        this.on_ = false;                   // the switch
+        this.holding = false;               // the BDC took it and we keep its session
+        this.value = null;                  // the output's latest value
+        this.fails = 0;
+        this.note = 'Off'; this.warn = false;
+        this._offReads = 0;
+        this._busy = null;
+        this._keepalive = null; this._check = null;
+        this._taken = [];
+        this._session = false;              // we opened the extended session (and end it when done)
+        this.uds.allowControl(this.element);
+    }
+
+    get state() {
+        return { on: this.on_, holding: this.holding, note: this.note, warn: this.warn, layout: this.layout, output: this.output,
+            value: this.value, busy: !!this._busy };
+    }
+
+    _say(text, warn) {
+        this.note = text; this.warn = !!warn;
+        (warn ? this.log.warn : this.log.info).call(this.log, 'seat lights: ' + text);
+        this.emit('change');
+    }
+    _save() { this.emit('save', { on: this.on_, layout: this.layout, statusDid: this.statusDid }); }
+    get ctl() { return this.statusDid ? CONTROL[key(this.statusDid)] : null; }
+
+    /* the lamp outputs, with whichever status identifier answers: [values] | null */
+    _read() {
+        const order = this.statusDid ? [this.statusDid] : STATUS_DIDS;
+        return order.reduce((p, did) => p.then((got) => {
+            if (got) return got;
+            return this.uds.read(BDC, did, 8000).then((r) => {
+                const mods = r ? lamps.parse(r, did) : null;
+                if (!mods) return null;
+                if (!this.statusDid) { this.statusDid = did; this._save(); }
+                return mods.map((m) => m.value);
+            }, () => null);
+        }), Promise.resolve(null)).then((v) => {
+            if (v) this.value = v[this.output - 1] === undefined ? null : v[this.output - 1];
+            return v;
+        });
+    }
+
+    setOn(on) {
+        on = !!on;
+        if (on === this.on_) return this._busy || Promise.resolve();
+        this.on_ = on; this.fails = 0;
+        this._save();
+        if (!on) {
+            this._stopTimers();
+            return (this._busy || Promise.resolve()).then(() => this._release('switched off')).then(() => this._say('Off'));
+        }
+        this._say('Switching on...');
+        this._startCheck();
+        return this._tick();
+    }
+
+    /* while ON: hold when not held; asked again when the output reads off twice */
+    _tick() {
+        if (!this.on_ || this._busy) return this._busy || Promise.resolve();
+        this._busy = this._read().then((v) => {
+            if (!this.on_) return undefined;
+            if (!v) { this._say('Waiting for the body controller (no lamp outputs read yet)', true); return undefined; }
+            const val = v[this.output - 1];
+            if (val === undefined) { this._say('The body controller reports no lamp output ' + this.output, true); return undefined; }
+            if (this.holding) {
+                if (val > 0) { this._offReads = 0; return undefined; }
+                if (++this._offReads < 2) return undefined;
+                this._offReads = 0;
+                this._say('Read OFF while held: asking again', true);
+                return this._assert();
+            }
+            if (this.layout === null) {
+                if (val > 0) { this._say('First time: waiting for the logos to go dark (engine on)'); return undefined; }
+                return this._probe(v);
+            }
+            return this._assert();
+        }).catch((e) => this._say('Error: ' + ((e && e.message) || e), true)).then(() => { this._busy = null; });
+        return this._busy;
+    }
+
+    _startCheck() {
+        if (this._check) return;
+        this._check = setInterval(() => { if (this.on_) this._tick(); }, this.checkMs);
+    }
+    _stopTimers() {
+        if (this._check) { clearInterval(this._check); this._check = null; }
+        if (this._keepalive) { clearInterval(this._keepalive); this._keepalive = null; }
+    }
+
+    _failed(text) {
+        this.fails++;
+        this.holding = false;
+        if (this.fails >= MAX_FAILS) {
+            this.on_ = false; this._save();
+            this._stopTimers();
+            this._say('Gave up after ' + this.fails + ' refusals in a row (' + text + '). Switch on to try again', true);
+            return this._release('gave up');
+        }
+        this._say(text + ' (' + this.fails + ' in a row, trying again)', true);
+        return Promise.resolve();
+    }
+
+    /* session, then hold on with the known layout */
+    _assert() {
+        return this.uds.control(BDC, 0x10, [0x03]).then((s) => {
+            if (!s || s[0] !== 0x50) return this._failed('The body controller didn\'t open the session: ' + why(s));
+            this._session = true;
+            return this.uds.control(BDC, 0x2f, this.ctl.concat(FORMATS[this.layout].on(this.element))).then((r) => {
+                if (!r || r[0] !== 0x6f) return this._failed('The body controller didn\'t take it: ' + why(r));
+                this.holding = true; this.fails = 0;
+                this._startKeepalive();
+                this._say('On');
+                return undefined;
+            });
+        });
+    }
+
+    /* the first time: find the record layout (see the top of this file) */
+    _probe(before) {
+        const idx = this.output - 1;
+        this._taken = [];
+        this._say('First time: finding the layout this body controller takes');
+        return this.uds.control(BDC, 0x10, [0x03]).then((s) => {
+            if (!s || s[0] !== 0x50) return this._failed('The body controller didn\'t open the session: ' + why(s));
+            this._session = true;
+            const tryOne = (f) => {
+                if (f >= FORMATS.length) {
+                    this.on_ = false; this._save(); this._stopTimers();
+                    this._say('The body controller took none of the ' + FORMATS.length + ' layouts', true);
+                    return this._release('no layout');
+                }
+                const req = this.ctl.concat(FORMATS[f].on(this.element));
+                return this.uds.control(BDC, 0x2f, req).then((a) => {
+                    this.log.info('seat lights: layout ' + (f + 1) + ' (2F ' + hex(req) + '): ' + (a && a[0] === 0x6f ? 'taken' : why(a)));
+                    if (a && a[0] === 0x7f && NEXT_LAYOUT.indexOf(a[2]) >= 0) return tryOne(f + 1);
+                    if (!a || a[0] !== 0x6f) return this._failed('The body controller didn\'t take it: ' + why(a));
+                    this._taken.push(f);
+                    return new Promise((res) => setTimeout(res, this.settleMs)).then(() => this._read()).then((after) => {
+                        if (!after) return this._failed('Couldn\'t read the outputs back');
+                        const others = after.map((v, i) => (i !== idx && v > 0 && !(before[i] > 0) ? i + 1 : null)).filter((x) => x !== null);
+                        if (others.length) {
+                            this.on_ = false; this._save(); this._stopTimers();
+                            this._say('Layout ' + (f + 1) + ' also switched on lamp output ' + others.join(', ') + ': handed back, stopped', true);
+                            return this._release('wrong layout');
+                        }
+                        if (!(after[idx] > 0)) {
+                            return this.uds.control(BDC, 0x2f, this.ctl.concat(FORMATS[f].back(this.element))).catch(() => null).then(() => tryOne(f + 1));
+                        }
+                        this.layout = f; this._save();
+                        this.holding = true; this.fails = 0;
+                        this._startKeepalive();
+                        this._say('On (layout ' + (f + 1) + ' found and saved)');
+                        return undefined;
+                    });
+                });
+            };
+            return tryOne(0);
+        });
+    }
+
+    _startKeepalive() {
+        if (this._keepalive) clearInterval(this._keepalive);
+        this._keepalive = setInterval(() => {
+            if (!this.holding) return;
+            this.uds.control(BDC, 0x3e, [0x00]).then((r) => {
+                if (r && r[0] === 0x7e) return;
+                this.holding = false;              // the session is gone: the next check asks again
+                this._say('The session was lost (' + why(r) + '): asking again', true);
+                this._tick();
+            }, () => null);
+        }, this.keepaliveMs);
+    }
+
+    /* hands the output back and leaves the session; safe any time */
+    _release(reason) {
+        if (this._keepalive) { clearInterval(this._keepalive); this._keepalive = null; }
+        if (!this.on_) this._stopTimers();
+        const was = this.holding || this._taken.length > 0;
+        const session = this._session;
+        this.holding = false; this._session = false;
+        if (!this.ctl || (!was && !session)) return Promise.resolve();
+        const layouts = !was ? [] : this.layout !== null ? [this.layout] : this._taken;
+        this._taken = [];
+        this.log.info('seat lights: ' + (was ? 'handing lamp output ' + this.output + ' back' : 'ending the session') + ' (' + reason + ')');
+        return layouts.reduce((p, f) => p.then(() => this.uds.control(BDC, 0x2f, this.ctl.concat(FORMATS[f].back(this.element))).catch(() => null)), Promise.resolve())
+            .then(() => this.uds.control(BDC, 0x10, [0x01]).catch(() => null));
+    }
+
+    /* the app is stopping: hand back, keep the switch as it is (it holds again at the next start) */
+    stop() {
+        this._stopTimers();
+        return this._release('the app is stopping');
+    }
+}
+
+module.exports = { SeatLight, OUTPUT, CHECK_MS, KEEPALIVE_MS, MAX_FAILS };
