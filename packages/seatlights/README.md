@@ -1,7 +1,11 @@
 # Seat Lights: keep the seat logos on
 
-An iDrive 8 app with one switch. **ON** keeps the illuminated logos in the seats' headrests lit with the car
-on, with no timer, until you switch it **OFF**. Made for the G87 M2, whose logos go dark once the car is started.
+An iDrive 8 app with one switch. **ON** keeps the illuminated logos in the seats' headrests lit **while the car is
+on**, with no timer, until you switch it **OFF**. When the car is turned off and locked, they go off with it, and
+come back on at the next start. Made for the G87 M2, whose logos go dark once the car is started.
+
+On the G87 the exterior door handle lights hang on the same body controller output as the seat logos, so they
+stay lit with them. One output feeds both, so the app can't light one without the other.
 
 ![Seat Lights](design/app_preview.png)
 
@@ -16,7 +20,20 @@ on, with no timer, until you switch it **OFF**. Made for the G87 M2, whose logos
 2. **The first time,** start the engine (so the logos are dark), open Seat Lights and switch it **ON**. It finds
    the record layout your body controller takes, saves it, and the logos light up.
 3. That's it. The switch is kept: with it ON, the app starts with the head unit and the logos come on by themselves
-   on every drive. Switch it **OFF** to give the logos back to the car.
+   as soon as the engine runs, every drive. Switch it **OFF** to give the logos back to the car.
+
+### With the car on, only
+
+| | |
+|---|---|
+| before the engine starts | nothing held: the car lights the logos itself (its welcome light) |
+| engine running | held |
+| engine stopped (auto start-stop at the lights) | still held for 30 s; a longer stop lets go, and it holds again when the engine restarts |
+| engine off for 30 s, or the head unit powering down with the engine off | handed back: the car switches the logos (and the handle lights) off as it locks |
+| the next start | held again |
+
+The engine comes from `CDS.statusEngineSpeed2` (the same signal Light Logger reads on the G87), the head unit's power
+state from `Lifecycle.powerStateDetailed`. Both are logged when they change.
 
 If you use Light Logger too, switch its **Keep on** off. Both would hold the same output through the same
 diagnostic session.
@@ -62,7 +79,7 @@ controller only. Anything else is refused before it reaches the car.
 | a renewal is refused (the session lost) | opens the session and asks again |
 | 5 refusals in a row | gives up: the switch goes OFF and the screen says what the body controller answered |
 | switched OFF | hands the output back and ends the session |
-| the app stopping (car off, head unit shutting down) | hands it back; the switch stays ON for the next drive |
+| the car off (above), or the app stopping | hands it back; the switch stays ON for the next drive |
 | the app crashing | nothing more is sent: the body controller ends the session after a few seconds and takes the output back by itself |
 
 The body controller stays in a diagnostic session for as long as the switch is ON. If anything behaves oddly
@@ -78,8 +95,8 @@ home, its working folder and the temp folder. Logs: the app's log (`STLT`), line
 app/                          the app (source package, id ida_seatlights, built on the head unit)
   mgu-app.json                id, version, modules, the oap-sdk modules it uses
   src/ida_seatlights.js       the app: the switch, the screen, the settings
-  src/seat_light.js           holds lamp output 45 on: the layout search, the session, the checks
-  src/ui.js                   the drawn screen
+  src/seat_light.js           holds lamp output 45 on with the car on: the layout search, the renewals, the checks
+  src/ui.js                   the drawn screen: the headrest badge and the switch
   src/uds.js, lamps.js, someip_link.js, gpu.js, ui_font.js
                               Light Logger's, copied as they are (an app gets only its own folder on the car);
                               tools/test_seatlights.js fails when they differ
@@ -88,4 +105,6 @@ app/                          the app (source package, id ida_seatlights, built 
   tools/preview_ui.js         writes design/app_preview.html (on | off | waiting)
 ```
 
-Not affiliated with BMW. MIT licensed.
+The screen shows the headrest badge as it is in the car (the stripes and "M2" drawn in strokes, glowing when ON).
+Not affiliated with BMW; BMW, M and M2 are BMW AG's trademarks, drawn here only to show which light the switch is for.
+MIT licensed.

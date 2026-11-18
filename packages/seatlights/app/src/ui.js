@@ -6,7 +6,7 @@
  *
  *   Seat Lights
  *          +-----------------------------------------------------------+
- *          |   ( seat, its logo lit )    SEAT LIGHTS                    |
+ *          |   ( the headrest badge )    SEAT LIGHTS                    |
  *          |                             ON            [====( )]       |
  *          |                             On                            |
  *          +-----------------------------------------------------------+
@@ -143,23 +143,77 @@ function fit(rec, style, s, maxW) {
     return s.slice(0, lo) + '...';
 }
 
-/* a sport seat from the front: headrest with its logo, the backrest, the bolsters */
-function seat(rec, cx, top, lit) {
-    const hw = 150, hh = 120, bw = 300, bh = 330;
-    rec.rrect(cx - bw / 2 - 26, top + hh + 34, 60, bh - 40, 30, C.seatEdge);       // bolsters
-    rec.rrect(cx + bw / 2 - 34, top + hh + 34, 60, bh - 40, 30, C.seatEdge);
-    rec.rrect(cx - bw / 2, top + hh + 20, bw, bh, 48, C.seat);                     // backrest
-    for (let i = 0; i < 4; i++) rec.rect(cx - 60, top + hh + 90 + i * 60, 120, 6, C.line);
-    rec.rrect(cx - 26, top + hh - 4, 52, 34, 10, C.seatEdge);                       // the headrest's neck
-    rec.rrect(cx - hw / 2, top, hw, hh, 44, C.seat);                                // headrest
-    const lx = cx - 46, ly = top + hh / 2 - 18, lw = 92, lh = 36;
-    if (lit) [[60, 22], [40, 44], [22, 80]].forEach((g) => rec.rrect(lx - g[0], ly - g[0], lw + 2 * g[0], lh + 2 * g[0], lh / 2 + g[0], [200, 220, 255, g[1]]));
-    rec.rrect(lx, ly, lw, lh, 10, lit ? C.logo : C.track);
-    rec.rrect(lx + 16, ly + 14, lw - 32, 8, 4, lit ? [190, 205, 235, 255] : C.line);
+/* the headrest's badge, as on the G87 M2: dark leather with a curved stitched seam, a chrome-rimmed glass window,
+ * the three stripes and the model's name in slanted strokes; lit, the lettering glows. Drawn with rrects and quads. */
+const STRIPES = [[43, 162, 224], [36, 62, 148], [226, 34, 40]];
+function shade(c, k, a) { return [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k), a === undefined ? 255 : a]; }
+
+function badge(rec, cx, cy, lit) {
+    // the leather: the headrest's face, a lighter top, the seam below the badge (dashes along a curve)
+    const LW = 600, LH = 470, lx = cx - LW / 2, ly = cy - LH / 2;
+    rec.rrect(lx, ly, LW, LH, 70, [22, 23, 26, 255]);
+    rec.rrect(lx + 18, ly + 14, LW - 36, LH * 0.42, 60, [30, 31, 35, 255]);
+    rec.rrect(lx + LW - 54, ly + 50, 30, LH - 100, 15, [19, 20, 23, 255]);            // the headrest's edge, right
+    rec.rrect(lx + 24, ly + 50, 26, LH - 100, 13, [25, 26, 30, 255]);                 // and left
+    const seam = (y0, dy, col) => {
+        for (let i = 0; i < 26; i++) {
+            const t0 = i / 26, t1 = (i + 0.55) / 26;
+            const p = (t) => [lx + 70 + t * (LW - 140), y0 + dy * Math.sin(Math.PI * t)];
+            const a = p(t0), b = p(t1);
+            rec.quad([[a[0], a[1] - 1.5], [b[0], b[1] - 1.5], [b[0], b[1] + 1.5], [a[0], a[1] + 1.5]], col);
+        }
+    };
+    seam(cy + 150, 40, [92, 95, 102, 255]);
+    seam(cy + 172, 40, [60, 62, 68, 255]);
+    rec.quad([[lx + 60, cy + 196], [lx + LW - 60, cy + 196], [lx + LW - 60, cy + 200], [lx + 60, cy + 200]], [12, 13, 15, 255]);
+
+    // the badge: chrome rim (dark edge, bright face, inner shadow), the glass
+    const BW = 440, BH = 180, bx = cx - BW / 2, by = cy - BH / 2 - 30;
+    rec.rrect(bx - 6, by - 6, BW + 12, BH + 12, 52, [70, 72, 78, 255]);
+    rec.rrect(bx, by, BW, BH, 46, [196, 199, 205, 255]);
+    rec.rrect(bx + 4, by + 3, BW - 8, BH * 0.45, 42, [226, 229, 234, 255]);         // the rim's highlight, top
+    rec.rrect(bx + 12, by + 12, BW - 24, BH - 24, 36, [110, 113, 120, 255]);
+    const gx = bx + 16, gy = by + 16, gw = BW - 32, gh = BH - 32;
+    rec.rrect(gx, gy, gw, gh, 32, lit ? [26, 28, 34, 255] : [14, 15, 18, 255]);
+    rec.rrect(gx + 14, gy + 6, gw - 28, gh * 0.3, 22, [255, 255, 255, lit ? 9 : 5]);  // the glass's sheen
+
+    // the lettering, slanted forward: three stripes, then M and 2 in strokes
+    const H = 70, base = gy + gh / 2 + H / 2, slant = 0.27;
+    const P = (x, y) => [x + (base - y) * slant, y];
+    const Q = (pts, c) => rec.quad(pts.map((p) => P(p[0], p[1])), c);
+    const x0 = gx + 70, top = base - H;
+    const glyphs = [];                               // the M2 strokes, in local coordinates, for the glow too
+    const st = 15;                                   // stroke width
+    const mx = x0 + 112, mw = 92;
+    glyphs.push([[mx, base], [mx + st, base], [mx + st, top], [mx, top]]);                                  // M: left stem
+    glyphs.push([[mx + mw - st, base], [mx + mw, base], [mx + mw, top], [mx + mw - st, top]]);                // right stem
+    glyphs.push([[mx, top], [mx + st + 2, top], [mx + mw / 2 + st / 2, base - H * 0.38], [mx + mw / 2 - st / 2, base - H * 0.38]]);
+    glyphs.push([[mx + mw - st - 2, top], [mx + mw, top], [mx + mw / 2 + st / 2, base - H * 0.38], [mx + mw / 2 - st / 2, base - H * 0.38]]);
+    const tx = mx + mw + 26, tw = 70;
+    glyphs.push([[tx + 4, top], [tx + tw - 10, top], [tx + tw - 10, top + st], [tx + 4, top + st]]);         // 2: the top
+    glyphs.push([[tx + tw - 10, top], [tx + tw, top + 10], [tx + tw, base - H * 0.5], [tx + tw - st, base - H * 0.5]]);   // the right
+    glyphs.push([[tx + tw - st, base - H * 0.5 - 6], [tx + tw, base - H * 0.5], [tx + st, base - st + 2], [tx, base - st]]);  // the diagonal
+    glyphs.push([[tx, base - st], [tx + tw, base - st], [tx + tw, base], [tx, base]]);                      // the bottom
+    glyphs.push([[tx, top + st], [tx + st, top + st], [tx + st, top + 26], [tx, top + 26]]);                 // the top's turn-down
+
+    if (lit) {
+        // the glow: a halo traced around each stroke (the stroke repeated, shifted all around, fainter further out)
+        [[14, 6], [10, 9], [6.5, 16], [3.5, 30], [1.8, 55]].forEach((ring) => {
+            const d = ring[0];
+            [[d, 0], [-d, 0], [0, d], [0, -d], [d * 0.7, d * 0.7], [-d * 0.7, d * 0.7], [d * 0.7, -d * 0.7], [-d * 0.7, -d * 0.7]].forEach((o) => {
+                glyphs.forEach((q) => Q(q.map((pt) => [pt[0] + o[0], pt[1] + o[1]]), [225, 235, 255, ring[1]]));
+            });
+        });
+    }
+    STRIPES.forEach((c, i) => {
+        const sx = x0 + i * 30;
+        Q([[sx, base - 6], [sx + 22, base - 6], [sx + 22, top + 14], [sx, top + 14]], lit ? c.concat(255) : shade(c, 0.32));
+    });
+    glyphs.forEach((q) => Q(q, lit ? [248, 250, 253, 255] : [64, 67, 74, 255]));
 }
 
 /*
- * model: { on (the switch), holding (the BDC took it), note, warn, output, layout, focus, pressed }
+ * model: { on (the switch), holding (the BDC took it), carOn, note, warn, output, layout, focus, pressed }
  * Returns { rec, targets: [{ key, x, y, w, h }] }.
  */
 function draw(rec, m) {
@@ -170,14 +224,14 @@ function draw(rec, m) {
 
     const K = { x: 520, y: 130, w: 1840, h: 520 };
     rec.rrect(K.x, K.y, K.w, K.h, 36, C.card);
-    seat(rec, K.x + 330, K.y + 24, !!m.holding);
+    badge(rec, K.x + 330, K.y + K.h / 2 + 10, !!m.holding);
 
     const tx = K.x + 720;
     rec.text('head', 'SEAT LIGHTS', tx, K.y + 120, C.faint, 'left', 4);
-    rec.text('title', m.on ? (m.holding ? 'ON' : 'ON ...') : 'OFF', tx, K.y + 230, m.on ? C.text : C.dim);
+    rec.text('title', !m.on ? 'OFF' : m.holding ? 'ON' : m.carOn === false ? 'ON  ·  WAITING' : 'ON ...', tx, K.y + 230, m.on ? C.text : C.dim);
     const note = m.note === 'On' || m.note === 'Off' ? (m.holding ? 'The logos are held on' : '') : m.note || '';
     rec.text('body', fit(rec, 'body', note, 1000), tx, K.y + 330, m.warn ? C.orange : m.holding ? C.green : C.dim);
-    rec.text('small', 'Keeps the headrest logos lit with the car on, until you switch it off.', tx, K.y + 400, C.faint);
+    rec.text('small', 'Keeps the headrest logos lit while the car is on. Off with the car, back on at the next start.', tx, K.y + 400, C.faint);
 
     // the switch
     const sw = 300, sh = 140, sx = K.x + K.w - 90 - sw, sy = K.y + 110, r = sh / 2;

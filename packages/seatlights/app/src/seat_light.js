@@ -17,7 +17,13 @@
  * it tries uds.js FORMATS in turn, with the logos dark, and keeps the first one the body controller takes that
  * lights the output (read back) with nothing else switching on. The layout is saved.
  *
- * While ON, every CHECK_MS it reads the lamp outputs: the output read off, or a renewal refused, and it asks again
+ * Only with the car on: the switch ON holds from the engine's start (car({ engine }) from CDS.statusEngineSpeed2)
+ * until the engine has been off for ENGINE_OFF_MS (so auto start-stop at the lights doesn't drop it), or at once when
+ * the head unit says it is powering down (car({ power }), Lifecycle.powerStateDetailed) with the engine not running.
+ * Then the output is handed back and the car switches the logos off itself as it locks; held again at the next start.
+ * Before the engine starts the car lights them itself (the welcome light), so there's nothing to hold.
+ *
+ * While held, every CHECK_MS it reads the lamp outputs: the output read off, or a renewal refused, and it asks again
  * at once (the log says how long the hold had lasted). MAX_FAILS refusals in a row and it gives up: the switch goes OFF and says why.
  *
  *   const s = new SeatLight({ uds, log, output: 45, layout, statusDid });
@@ -32,6 +38,8 @@ const BDC = 0x40;
 const OUTPUT = 45;
 const REFRESH_MS = 2500;
 const CHECK_MS = 2000;
+const ENGINE_OFF_MS = 30000;
+const POWER_DOWN = /OFF|STANDBY|SLEEP|SHUTDOWN|PARK|SUSPEND/i;
 const SETTLE_MS = 700;
 const MAX_FAILS = 5;
 const STATUS_DIDS = [[0xe3, 0xb9], [0x45, 0x00]];
@@ -53,6 +61,10 @@ class SeatLight extends EventEmitter {
         this.output = o.output || OUTPUT;
         this.element = this.output - 1;
         this.refreshMs = o.refreshMs || REFRESH_MS;
+        this.engineOffMs = o.engineOffMs === undefined ? ENGINE_OFF_MS : o.engineOffMs;
+        this.engine = null;                 // true running, false off, null not known yet
+        this._engineOffAt = null;
+        this.power = null;                  // the head unit's power state, as it says it
         this._heldSince = 0;
         this.checkMs = o.checkMs || CHECK_MS;
         this.settleMs = o.settleMs === undefined ? SETTLE_MS : o.settleMs;
@@ -72,7 +84,31 @@ class SeatLight extends EventEmitter {
 
     get state() {
         return { on: this.on_, holding: this.holding, note: this.note, warn: this.warn, layout: this.layout, output: this.output,
-            value: this.value, busy: !!this._busy };
+            value: this.value, busy: !!this._busy, carOn: this.carOn(), engine: this.engine };
+    }
+
+    /* the car's state, from the app: { engine: true | false } and / or { power: '...' } */
+    car(c) {
+        if (c && c.engine !== undefined && c.engine !== this.engine) {
+            // the grace after the engine stops is for a drive's stops (auto start-stop); an engine that hasn't run since
+            // the app started (off at the start) is simply off
+            this._engineOffAt = c.engine === false && this.engine === true ? this.now() : null;
+            this.engine = c.engine;
+            this.log.info('seat lights: engine ' + (c.engine ? 'running' : 'off'));
+        }
+        if (c && c.power !== undefined && c.power !== this.power) {
+            this.power = c.power;
+            this.log.info('seat lights: head unit power state ' + c.power);
+        }
+        if (this.on_) this._tick();
+    }
+
+    /* the car is on: the engine running, or off for less than engineOffMs with the head unit not powering down */
+    carOn() {
+        if (this.engine === true) return true;
+        if (this.engine !== false || this._engineOffAt === null) return false;
+        if (this.power && POWER_DOWN.test(this.power)) return false;
+        return this.now() - this._engineOffAt < this.engineOffMs;
     }
 
     _say(text, warn) {
@@ -117,6 +153,18 @@ class SeatLight extends EventEmitter {
     /* while ON: hold when not held; asked again when the output reads off twice */
     _tick() {
         if (!this.on_ || this._busy) return this._busy || Promise.resolve();
+        if (!this.carOn()) {
+            // the car is off (or not started yet): the car's own logic has the logos
+            if (!this.holding && !this._session) {
+                const text = this.engine === null ? 'On: waiting for the car (lights on once the engine runs)' : 'On: lights back on when you start the car';
+                if (this.note !== text) this._say(text);
+                return Promise.resolve();
+            }
+            this._busy = this._release(this.engine === false ? 'the car is off' : 'the car is not on').then(() => {
+                this._say('On: lights back on when you start the car');
+            }).then(() => { this._busy = null; });
+            return this._busy;
+        }
         this._busy = this._read().then((v) => {
             if (!this.on_) return undefined;
             if (!v) { this._say('Waiting for the body controller (no lamp outputs read yet)', true); return undefined; }
@@ -258,4 +306,4 @@ class SeatLight extends EventEmitter {
     }
 }
 
-module.exports = { SeatLight, OUTPUT, CHECK_MS, REFRESH_MS, MAX_FAILS };
+module.exports = { SeatLight, OUTPUT, CHECK_MS, REFRESH_MS, ENGINE_OFF_MS, MAX_FAILS };

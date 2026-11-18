@@ -69,6 +69,7 @@ function lightFor(bdc, opts) {
     const s = new SeatLight(Object.assign({ uds: u, log, refreshMs: 15, checkMs: 25, settleMs: 5 }, opts || {}));
     const saves = [];
     s.on('save', (x) => saves.push(JSON.parse(JSON.stringify(x))));
+    if (!opts || !opts.carOff) s.car({ engine: true });            // the engine running, unless the test says otherwise
     return u.init().then(() => ({ s: s, u: u, saves: saves }));
 }
 
@@ -140,6 +141,54 @@ tests.push(() => {
     });
 });
 tests.push(() => {
+    // the car off and locked: handed back; held again at the next start
+    const bdc = fakeBdc(1);
+    let clock = 1e6;
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], carOff: true, engineOffMs: 1000, now: () => clock }).then(({ s, saves }) => s.setOn(true).then(() => {
+        ok(s.state.on && !s.holding && !bdc.log.some((x) => /^(2F|10)/.test(x)) && /waiting for the car/.test(s.note), 'ON before the engine starts: nothing held (the car lights them itself)');
+        s.car({ engine: false });                                       // the first reading: off (the car parked)
+        return wait(60);
+    }).then(() => {
+        ok(!s.holding && !bdc.log.some((x) => /^(2F|10)/.test(x)), 'the engine off from the start: nothing held (no start-stop grace)');
+        s.car({ engine: true });
+        return wait(40);
+    }).then(() => {
+        ok(s.holding && bdc.held === 44, 'engine running: held');
+        // auto start-stop: a short stop keeps it
+        s.car({ engine: false }); clock += 500; s.car({ engine: false });
+        return wait(40);
+    }).then(() => {
+        ok(s.holding && bdc.held === 44, 'a short engine stop (start-stop): still held');
+        clock += 600;                                                   // off for longer than engineOffMs
+        return wait(60);
+    }).then(() => {
+        ok(!s.holding && bdc.held === null && bdc.session === 1 && s.state.on, 'engine off a while: handed back, the switch stays ON');
+        ok(/back on when you start the car/.test(s.note) && saves[saves.length - 1].on === true, 'says so, ON kept');
+        bdc.log = [];
+        return wait(60);
+    }).then(() => {
+        ok(!bdc.log.length, 'the car off: nothing sent, not even reads');
+        s.car({ engine: true });
+        return wait(40);
+    }).then(() => {
+        ok(s.holding && bdc.held === 44, 'the next start: held again');
+        // the head unit powering down with the engine off: let go at once
+        s.car({ engine: false }); s.car({ power: 'STANDBY' });
+        return wait(40);
+    }).then(() => {
+        ok(!s.holding && bdc.held === null && bdc.session === 1, 'head unit powering down, engine off: handed back at once');
+        s.car({ power: 'ON' }); s.car({ engine: true });
+        return wait(40);
+    }).then(() => {
+        ok(s.holding, 'on again');
+        s.car({ power: 'STANDBY' });
+        return wait(40);
+    }).then(() => {
+        ok(s.holding, 'a power state with the engine running never lets go');
+        return s.stop();
+    }));
+});
+tests.push(() => {
     // the saved layout and identifier from an earlier start: held at once
     const bdc = fakeBdc(1);
     return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9] }).then(({ s }) => s.setOn(true).then(() => {
@@ -203,7 +252,8 @@ app.modules.forEach((m) => {
 const man = JSON.parse(fs.readFileSync(path.join(ROOT, 'package', 'manifest.json'), 'utf8')).proxies;
 const tasu = man['com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu'];
 ok(tasu && tasu.methods.join() === 'sendTasuRequest' && tasu.broadcasts.join() === 'sendTasuResponse', 'manifest: the diagnostic link');
-ok(!man['de.bmw.infotainment.vehicle.CDS'] && !man['de.bmw.infotainment.vehicle.Vehicle2'], 'manifest: no car data it doesn\'t use');
+ok(man['de.bmw.infotainment.vehicle.CDS'].attributes.statusEngineSpeed2 === 'rs' && man['de.bmw.infotainment.lifecycle.lifecycle.Lifecycle'].attributes.powerStateDetailed === 'rs'
+    && !man['de.bmw.infotainment.vehicle.Vehicle2'], 'manifest: the engine and the power state, nothing else of the car');
 const pj = JSON.parse(fs.readFileSync(path.join(ROOT, 'package', 'package.json'), 'utf8'));
 ok(pj.mguAppStartType === 'autostart' && pj.name === 'ida_seatlights', 'starts with the head unit');
 const uiDesc = JSON.parse(fs.readFileSync(path.join(ROOT, 'package/rhmiData/uiDescriptions/ID8/uiDescription.json'), 'utf8'));

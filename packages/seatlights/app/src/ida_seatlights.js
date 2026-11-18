@@ -1,7 +1,8 @@
 'use strict';
 /*
  * Seat Lights: an iDrive 8 app with one switch. ON keeps the seat (headrest) logos lit, with no timer, until it is
- * switched OFF (seat_light.js: the body controller's lamp output 45 held on). The switch is kept, and the app starts
+ * switched OFF (seat_light.js: the body controller's lamp output 45 held on), with the car on: from the engine's
+ * start until it has been off for 30 s or the head unit powers down. Then the car switches them off as it locks. The switch is kept, and the app starts
  * with the head unit (package.json mguAppStartType autostart), so with it ON the logos come on by themselves each drive.
  *
  * Its screen: drawn by the head unit's renderer (ui.js, gpu.js) when MGU Store's Renderer is installed (touch, or the
@@ -73,6 +74,7 @@ class SeatLightsApp extends OnlineApp {
         this._link = new SomeipLink(logger);
         this._uds = new Uds(this._link, logger);
         this._light = new SeatLight({ uds: this._uds, log: logger, layout: saved.layout, statusDid: saved.statusDid });
+        this._watching = false;
         this._light.on('change', () => { this._dirty = true; });
         this._light.on('save', (st) => {
             try { if (this._file) fs.writeFileSync(this._file, JSON.stringify(st)); } catch (e) { logger.warn('not saved: ' + e.message); }
@@ -116,7 +118,7 @@ class SeatLightsApp extends OnlineApp {
 
     /* the diagnostic link; with the switch ON from the last drive, the logos go on as soon as it is there */
     _startLink() {
-        const ready = () => { if (this._wantOn && !this._light.state.on) this._light.setOn(true); this._dirty = true; };
+        const ready = () => { if (this._wantOn && !this._light.state.on) this._light.setOn(true); this._dirty = true; this._watchCar(); };
         this._uds.init().then(ready, () => {
             logger.warn('diagnostic link unavailable: ' + this._uds.error + ' (trying again)');
             const t = setInterval(() => {
@@ -125,6 +127,28 @@ class SeatLightsApp extends OnlineApp {
             }, 5000);
             this._timers.push(t);
         });
+    }
+
+    /* the engine (CDS.statusEngineSpeed2: rpm x 4, 65535 none) and the head unit's power state: the logos are held
+     * only with the car on (seat_light.js car()) */
+    _watchCar() {
+        if (this._watching) return;
+        this._watching = true;
+        const engine = (v) => {
+            const raw = v && v.actualValueRPMEngineCrankshaft;
+            if (typeof raw !== 'number' || raw === 65535) return;
+            const rpm = raw * 0.25;
+            if (rpm >= 400) this._light.car({ engine: true });
+            else if (rpm <= 50) this._light.car({ engine: false });
+        };
+        const power = (v) => {
+            if (v === undefined || v === null) return;
+            this._light.car({ power: typeof v === 'object' ? JSON.stringify(v) : String(v) });
+        };
+        this._link.open('de.bmw.infotainment.vehicle.CDS', '1', { fields: { statusEngineSpeed2: engine } })
+            .catch(() => null)
+            .then(() => this._link.open('de.bmw.infotainment.lifecycle.lifecycle.Lifecycle', 'Front', { fields: { powerStateDetailed: power } }))
+            .catch(() => logger.info('head unit power state not available; the engine alone decides'));
     }
 
     _toggle() {
@@ -147,7 +171,7 @@ class SeatLightsApp extends OnlineApp {
     _model() {
         const st = this._light.state;
         const on = this._uds.ready ? st.on : this._wantOn;
-        return { on: on, holding: st.holding, note: this._uds.ready ? st.note : 'Waiting for the diagnostic link', warn: st.warn,
+        return { on: on, holding: st.holding, carOn: st.carOn, note: this._uds.ready ? st.note : 'Waiting for the diagnostic link', warn: st.warn,
             output: st.output, layout: st.layout, focus: this._ui.focus, pressed: this._ui.pressed };
     }
 
@@ -238,7 +262,7 @@ class SeatLightsApp extends OnlineApp {
         const m = this._model();
         this._set(STATUS, 'Text', m.note + '  |  lamp output ' + m.output + (m.layout !== null && m.layout !== undefined ? ', layout ' + (m.layout + 1) : ''));
         this._set(SWITCH, 'PrimaryText', 'Seat lights');
-        this._set(SWITCH, 'FrequencyText', m.on ? (m.holding ? 'ON' : 'ON (starting)') : 'OFF');
+        this._set(SWITCH, 'FrequencyText', m.on ? (m.holding ? 'ON' : m.carOn === false ? 'ON (waiting for the car)' : 'ON (starting)') : 'OFF');
         this._set(SWITCH, 'FrequencyVisible', true);
         Promise.resolve(this.rhmiApplication.flush && this.rhmiApplication.flush()).catch(() => { /* next render */ });
     }

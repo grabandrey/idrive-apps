@@ -100,6 +100,22 @@
         "sendTasuResponse"
       ]
     },
+    "de.bmw.infotainment.vehicle.CDS": {
+      "instances": [
+        "1"
+      ],
+      "attributes": {
+        "statusEngineSpeed2": "rs"
+      }
+    },
+    "de.bmw.infotainment.lifecycle.lifecycle.Lifecycle": {
+      "instances": [
+        "Front"
+      ],
+      "attributes": {
+        "powerStateDetailed": "rs"
+      }
+    },
     "de.bmw.infotainment.personalization.SessionManager": "*"
   },
   "services": {

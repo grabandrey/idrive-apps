@@ -12,7 +12,7 @@ const variant = process.argv[3] || 'on';
 const models = {
     on: { on: true, holding: true, note: 'On', warn: false, output: 45, layout: 1 },
     off: { on: false, holding: false, note: 'Off', warn: false, output: 45, layout: 1 },
-    waiting: { on: true, holding: false, note: 'First time: waiting for the logos to go dark (engine on)', warn: false, output: 45, layout: null },
+    waiting: { on: true, holding: false, carOn: false, note: 'On: lights back on when you start the car', warn: false, output: 45, layout: 1 },
 };
 const { rec } = ui.draw(new ui.Recorder(), Object.assign({ focus: 'slSwitch' }, models[variant]));
 const words = Array.from(rec.words());

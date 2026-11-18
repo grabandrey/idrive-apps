@@ -34,7 +34,7 @@
       "path": "packages/seatlights/app",
       "build": "unit",
       "title": "Seat Lights",
-      "description": "One switch: keeps the seat (headrest) logos lit with the car on, no timer, until you switch it off (G87 M2: the body controller's lamp output 45). The switch is kept across drives. EXPERIMENTAL.",
+      "description": "One switch: keeps the seat (headrest) logos lit while the car is on, no timer, until you switch it off; off with the car when it is turned off and locked (G87 M2: the body controller's lamp output 45). The switch is kept across drives. EXPERIMENTAL.",
       "uninstallable": true,
       "mguHmi": ["ID8"]
     }
