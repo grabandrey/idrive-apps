@@ -1,6 +1,6 @@
 {
   "name": "ida_seatlights",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "One switch: keeps the seat (headrest) logos lit until switched off",
   "private": false,
   "main": "javascript/runner.js",

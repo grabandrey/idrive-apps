@@ -31,7 +31,9 @@ function fakeLink(answer) {
     return l;
 }
 function fakeBdc(layoutIndex) {
-    const b = { session: 1, held: null, carLogo: false, log: [], refuse: null, dropSession: false, letGo: false };
+    // expireMs: like the car, a hold that isn't asked for again within that time lets go
+    const b = { session: 1, held: null, carLogo: false, log: [], refuse: null, dropSession: false, letGo: false, expireMs: 0, heldAt: 0, offSeen: 0 };
+    const expired = () => b.expireMs && b.held === 44 && Date.now() - b.heldAt > b.expireMs;
     const want = uds.FORMATS[layoutIndex];
     b.answer = (req) => {
         const d = Array.from(Buffer.from(req.udsData)), sid = req.serviceID;
@@ -40,17 +42,20 @@ function fakeBdc(layoutIndex) {
         if (sid === 0x22) {
             if (d[0] !== 0xe3 || d[1] !== 0xb9) return out([0x7f, 0x22, 0x31]);
             const o = [0x62, 0xe3, 0xb9];
-            for (let i = 0; i < 50; i++) o.push(i === 44 ? ((b.held === 44 && !b.letGo) || b.carLogo ? 1 : 0) : i === 6 ? 1 : 0);
+            const lit = (b.held === 44 && !b.letGo && !expired()) || b.carLogo;
+            if (b.held === 44 && !lit) b.offSeen++;
+            for (let i = 0; i < 50; i++) o.push(i === 44 ? (lit ? 1 : 0) : i === 6 ? 1 : 0);
             return out(o);
         }
         if (b.refuse && b.refuse.sid === sid) return out([0x7f, sid, b.refuse.nrc]);
         if (sid === 0x10) { b.session = d[0]; if (d[0] === 1) b.held = null; return out([0x50, d[0]]); }
         if (sid === 0x3e) return b.dropSession || b.session !== 3 ? out([0x7f, 0x3e, 0x7f]) : out([0x7e, 0x00]);
         if (sid === 0x2f) {
+            if (b.dropSession) b.session = 1;
             if (b.session !== 3) return out([0x7f, 0x2f, 0x7f]);
             const rest = d.slice(2);
             if (rest.length !== want.on(44).length) return out([0x7f, 0x2f, 0x13]);
-            if (rest.join() === want.on(44).join()) { b.held = 44; b.letGo = false; } else if (rest.join() === want.back(44).join()) b.held = null;
+            if (rest.join() === want.on(44).join()) { b.held = 44; b.letGo = false; b.heldAt = Date.now(); } else if (rest.join() === want.back(44).join()) b.held = null;
             else return out([0x7f, 0x2f, 0x31]);
             return out([0x6f, d[0], d[1]].concat(rest.slice(0, 2)));
         }
@@ -61,7 +66,7 @@ function fakeBdc(layoutIndex) {
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function lightFor(bdc, opts) {
     const u = new uds.Uds(fakeLink(bdc.answer), log);
-    const s = new SeatLight(Object.assign({ uds: u, log, keepaliveMs: 15, checkMs: 25, settleMs: 5 }, opts || {}));
+    const s = new SeatLight(Object.assign({ uds: u, log, refreshMs: 15, checkMs: 25, settleMs: 5 }, opts || {}));
     const saves = [];
     s.on('save', (x) => saves.push(JSON.parse(JSON.stringify(x))));
     return u.init().then(() => ({ s: s, u: u, saves: saves }));
@@ -83,12 +88,12 @@ tests.push(() => {
         ok(last.on === true && last.layout === 1 && last.statusDid.join() === '227,185', 'switch, layout and identifier saved');
         return wait(60);
     }).then(() => {
-        ok(bdc.log.indexOf('3E 00') >= 0 && s.holding, 'kept: tester present, no timer');
+        ok(bdc.log.filter((x) => x === '2F E3 B5 03 00 2C 01').length >= 3 && s.holding, 'kept: the hold renewed, no timer');
         // the car lets go of it (output reads off twice): asked again
         bdc.letGo = true; bdc.log = [];
         return wait(90);
     }).then(() => {
-        ok(bdc.log.indexOf('2F E3 B5 03 00 2C 01') >= 0 && !bdc.letGo && s.holding, 'read off while held: asked again');
+        ok(!bdc.letGo && s.holding && bdc.log.indexOf('2F E3 B5 03 00 2C 01') >= 0, 'the car lets go: taken back (the renewal, or the check)');
         // the session lost: asked again
         bdc.dropSession = true; bdc.log = [];
         return wait(20).then(() => { bdc.dropSession = false; return wait(80); });
@@ -109,6 +114,29 @@ tests.push(() => {
         return s.stop();
     }).then(() => {
         ok(bdc.held === null && bdc.session === 1 && s.state.on === true, 'the app stopping: handed back, the switch stays ON for next time');
+    });
+});
+tests.push(() => {
+    // the car's ~10 s limit on a hold (60 ms here): renewed in time, it never reads off
+    const bdc = fakeBdc(1);
+    bdc.expireMs = 60;
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9] }).then(({ s }) => s.setOn(true).then(() => wait(400)).then(() => {
+        ok(s.holding && bdc.offSeen === 0 && !s.warn, 'a hold the car ends after a while: renewed before it does, never off');
+        return s.stop();
+    }));
+});
+tests.push(() => {
+    // renewing too slowly for the car's limit: each lapse is caught and logged with how long it held
+    const bdc = fakeBdc(1);
+    bdc.expireMs = 40;
+    const notes = [];
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], refreshMs: 500 }).then(({ s }) => {
+        s.on('change', () => notes.push(s.note));
+        return s.setOn(true).then(() => wait(200)).then(() => {
+            ok(/Went off after \d+(\.\d)? s held: asking again/.test(notes.join('|')) && bdc.log.filter((x) => /^2F E3 B5 03/.test(x)).length >= 2,
+                'a lapse: logged with how long it held, asked again');
+            return s.stop();
+        });
     });
 });
 tests.push(() => {

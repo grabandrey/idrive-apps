@@ -7,15 +7,18 @@
  * output number minus one. How, the way Light Logger's Keep on does it (the MIT-licensed idrive7-apps kit's way):
  *   10 03                       the body controller's extended diagnostic session
  *   2F <ctl> <layout, on>       hold the output on; <ctl> E3B5 when the lamp outputs read with E3B9, 4501 with 4500
- *   3E 00 every KEEPALIVE_MS    keeps the session; if the app stops, the BDC ends it after a few seconds and takes
- *                               the output back by itself
+ *   2F <ctl> <layout, on>       again every REFRESH_MS: on the car the hold lasted about 10 s and the logos went
+ *                               dark, then lit again when the app asked again. A body controller ends a short-term
+ *                               adjustment after a while, and the session after a few quiet seconds; the same
+ *                               request every 2.5 s renews both, before either runs out. If the app stops, the
+ *                               requests stop, and the BDC ends the session and takes the output back by itself
  *   2F <ctl> <layout, back>     hand it back (switch OFF, the app stopping), then 10 01
  * The record layout: the G87 refused the kit's 03 <el> 01 with "bad length", so the first time the switch goes ON
  * it tries uds.js FORMATS in turn, with the logos dark, and keeps the first one the body controller takes that
  * lights the output (read back) with nothing else switching on. The layout is saved.
  *
- * While ON, every CHECK_MS it reads the lamp outputs: the output off twice in a row, or the session lost, and it
- * asks again. MAX_FAILS refusals in a row and it gives up: the switch goes OFF and says why.
+ * While ON, every CHECK_MS it reads the lamp outputs: the output read off, or a renewal refused, and it asks again
+ * at once (the log says how long the hold had lasted). MAX_FAILS refusals in a row and it gives up: the switch goes OFF and says why.
  *
  *   const s = new SeatLight({ uds, log, output: 45, layout, statusDid });
  *   s.setOn(true | false)      s.state -> { on, holding, note, warn, layout, output }      s.stop()
@@ -27,8 +30,8 @@ const lamps = require('./lamps.js');
 
 const BDC = 0x40;
 const OUTPUT = 45;
-const KEEPALIVE_MS = 2000;
-const CHECK_MS = 5000;
+const REFRESH_MS = 2500;
+const CHECK_MS = 2000;
 const SETTLE_MS = 700;
 const MAX_FAILS = 5;
 const STATUS_DIDS = [[0xe3, 0xb9], [0x45, 0x00]];
@@ -49,7 +52,8 @@ class SeatLight extends EventEmitter {
         this.uds = o.uds; this.log = o.log; this.now = o.now || Date.now;
         this.output = o.output || OUTPUT;
         this.element = this.output - 1;
-        this.keepaliveMs = o.keepaliveMs || KEEPALIVE_MS;
+        this.refreshMs = o.refreshMs || REFRESH_MS;
+        this._heldSince = 0;
         this.checkMs = o.checkMs || CHECK_MS;
         this.settleMs = o.settleMs === undefined ? SETTLE_MS : o.settleMs;
         this.layout = Number.isInteger(o.layout) && FORMATS[o.layout] ? o.layout : null;
@@ -59,7 +63,6 @@ class SeatLight extends EventEmitter {
         this.value = null;                  // the output's latest value
         this.fails = 0;
         this.note = 'Off'; this.warn = false;
-        this._offReads = 0;
         this._busy = null;
         this._keepalive = null; this._check = null;
         this._taken = [];
@@ -120,10 +123,9 @@ class SeatLight extends EventEmitter {
             const val = v[this.output - 1];
             if (val === undefined) { this._say('The body controller reports no lamp output ' + this.output, true); return undefined; }
             if (this.holding) {
-                if (val > 0) { this._offReads = 0; return undefined; }
-                if (++this._offReads < 2) return undefined;
-                this._offReads = 0;
-                this._say('Read OFF while held: asking again', true);
+                if (val > 0) return undefined;
+                this._say('Went off after ' + this._heldFor() + ' held: asking again', true);
+                this.holding = false;
                 return this._assert();
             }
             if (this.layout === null) {
@@ -164,6 +166,7 @@ class SeatLight extends EventEmitter {
             this._session = true;
             return this.uds.control(BDC, 0x2f, this.ctl.concat(FORMATS[this.layout].on(this.element))).then((r) => {
                 if (!r || r[0] !== 0x6f) return this._failed('The body controller didn\'t take it: ' + why(r));
+                if (!this.holding) this._heldSince = this.now();
                 this.holding = true; this.fails = 0;
                 this._startKeepalive();
                 this._say('On');
@@ -204,7 +207,7 @@ class SeatLight extends EventEmitter {
                             return this.uds.control(BDC, 0x2f, this.ctl.concat(FORMATS[f].back(this.element))).catch(() => null).then(() => tryOne(f + 1));
                         }
                         this.layout = f; this._save();
-                        this.holding = true; this.fails = 0;
+                        this.holding = true; this.fails = 0; this._heldSince = this.now();
                         this._startKeepalive();
                         this._say('On (layout ' + (f + 1) + ' found and saved)');
                         return undefined;
@@ -215,17 +218,22 @@ class SeatLight extends EventEmitter {
         });
     }
 
+    _heldFor() { return Math.round((this.now() - this._heldSince) / 100) / 10 + ' s'; }
+
+    /* the hold asked for again every refreshMs: renews it and the session (see the top of this file) */
     _startKeepalive() {
         if (this._keepalive) clearInterval(this._keepalive);
         this._keepalive = setInterval(() => {
-            if (!this.holding) return;
-            this.uds.control(BDC, 0x3e, [0x00]).then((r) => {
-                if (r && r[0] === 0x7e) return;
-                this.holding = false;              // the session is gone: the next check asks again
-                this._say('The session was lost (' + why(r) + '): asking again', true);
+            if (!this.holding || this._busy) return;
+            this.uds.control(BDC, 0x2f, this.ctl.concat(FORMATS[this.layout].on(this.element))).then((r) => {
+                if (!this.holding) return;
+                if (r && r[0] === 0x6f) return;
+                // the session is gone, or the hold refused: ask again from the start
+                this.holding = false;
+                this._say('Renewal ' + why(r) + ' after ' + this._heldFor() + ' held: asking again', true);
                 this._tick();
             }, () => null);
-        }, this.keepaliveMs);
+        }, this.refreshMs);
     }
 
     /* hands the output back and leaves the session; safe any time */
@@ -250,4 +258,4 @@ class SeatLight extends EventEmitter {
     }
 }
 
-module.exports = { SeatLight, OUTPUT, CHECK_MS, KEEPALIVE_MS, MAX_FAILS };
+module.exports = { SeatLight, OUTPUT, CHECK_MS, REFRESH_MS, MAX_FAILS };

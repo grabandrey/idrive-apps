@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "id": "ida_seatlights",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "tree": "package",
   "modules": [
     "src/ida_seatlights.js",
