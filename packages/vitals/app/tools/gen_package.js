@@ -28,7 +28,8 @@ const LANGS = ['ar_AE', 'cs_CZ', 'da_DK', 'de_DE', 'el_GR', 'en_GB', 'en_US', 'e
     'ru_RU', 'sk_SK', 'sl_SI', 'sv_SE', 'th_TH', 'tr_TR', 'uk_UA', 'vi_VN', 'zh_CN', 'zh_TW', 'zh_yue_Hans_CN', 'zh_yue_Hant_CN'];
 const STRINGS = { SID_VT_TITLE: 'Vitals' };
 
-/* the one screen: title, status line, a button per setting (settings_model.js ROWS) */
+/* the one screen: title, status line, a button per setting (settings_model.js ROWS), in the drawn screen's
+ * reading order (ui.js): under the drawn screen the controller walks this list */
 const BUTTONS = [
     [21, 'vtTempUnit', 'Temperature unit'],
     [22, 'vtPressUnit', 'Pressure unit'],
@@ -37,8 +38,11 @@ const BUTTONS = [
     [25, 'vtGearboxWarn', 'Gearbox oil warning'],
     [26, 'vtAccent', 'Gauge colour'],
     [27, 'vtPressures', 'Tyre pressures'],
-    [30, 'vtPosition', 'Widget position'],
     [28, 'vtDemo', 'Demo values'],
+    [30, 'vtUp', 'Move widget up'],
+    [31, 'vtDown', 'Move widget down'],
+    [33, 'vtZoomOut', 'Widget smaller'],
+    [32, 'vtZoomIn', 'Widget bigger'],
     [29, 'vtReset', 'Reset to defaults'],
 ];
 

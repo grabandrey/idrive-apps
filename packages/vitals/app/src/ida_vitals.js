@@ -4,8 +4,10 @@
  *
  *   - reads coolant, oil and tyre data from the car through BMW's SDK (car_data.js) and sends
  *     it to the widget service (packages/vitals/tool), which runs as root without the SDK;
- *   - shows one native list screen of settings: a status line, then a row per setting with
- *     its value on the right; pressing a row cycles it.
+ *   - shows its screen: drawn by the head unit's GPU renderer (ui.js, gpu.js) over the HMI page when
+ *     MGU Store's renderer is installed, with the live values and the settings as tiles (touch, or the
+ *     controller: the HMI's own list underneath keeps the focus and its focused row lights the tile);
+ *     otherwise the HMI's own list: a status line, then a row per setting, pressing a row changes it.
  *
  * Built on the head unit by MGU Store against the car's own oap-sdk (mgu-app.json).
  */
@@ -14,6 +16,8 @@ const logging = require('oap-sdk/src/logging/logging');
 const { CtlClient } = require('./ctl_client.js');
 const { CarData } = require('./car_data.js');
 const model = require('./settings_model.js');
+const { Gpu } = require('./gpu.js');
+const ui = require('./ui.js');
 
 const logger = logging.getSDKLogger();
 
@@ -30,6 +34,10 @@ const STATE = 'ST_OnlineApps_Vitals';
 const STATUS = 'vtStatus';
 const ROW_KEY = 2;                  // a press's row in a raw userEvent's parameterMap
 const SEND_MS = 500;                // car data to the widget at most this often
+const VALUE_KEY = 0;                // a focus event's value in a raw userEvent's parameterMap
+const FRAME_MS = 100;               // the drawn screen: looked at this often, sent when it changed (or each second)
+const ID8_AREA = { x: 0, y: 76, w: 2880, h: 764 };     // the app area under iDrive 8's status bar
+const isTrue = (v) => v === true || v === 1 || v === 'true' || v === '1';
 const FOREGROUND_REASONS = ['ENTRY_POINT', 'LUM', 'BOOKMARK', 'START_WIDGET', 'TRIGGER_HMI', 'SPEECH_COMMAND'];
 
 class Vitals extends OnlineApp {
@@ -47,6 +55,8 @@ class Vitals extends OnlineApp {
         this._pending = {};
         this._sendTimer = null;
         this._opening = null;
+        this._gpu = null;
+        this._ui = { rec: new ui.Recorder(), targets: [], focus: null, pressed: null, down: null, key: '', timer: null };
         this._ctl = new CtlClient();
         this._car = new CarData(logger);
 
@@ -77,6 +87,7 @@ class Vitals extends OnlineApp {
         const reason = (data && data.reason) || this.startReason;
         const foreground = FOREGROUND_REASONS.indexOf(reason) >= 0;
         return this._setupRhmi()
+            .then(() => this._startGpu())
             .then(() => this._pushRows())
             .then(() => this._registerEntryPoint()
                 .catch((err) => logger.warn('entry point: ' + (err && err.message) + '; starting without it')))
@@ -120,11 +131,14 @@ class Vitals extends OnlineApp {
             this._comps[row.name] = comp;
             try { this._byId[Number(comp.getId())] = row; } catch (e) { /* events from the component only */ }
             comp.on('action', () => this._press(row));
+            comp.on('focus', (ev) => this._focus(row.name, isTrue(ev && ev.value)));
         });
         // presses can also arrive as the application's raw userEvent; _press keeps one of a pair
         rhmi.on('userEvent', (ev) => {
             const row = ev && ev.eventType === 'ACTION' && this._byId[Number(ev.sourceId)];
             if (row) this._press(row, Number((ev.parameterMap || {})[ROW_KEY]) || 0);
+            const frow = ev && ev.eventType === 'FOCUS' && this._byId[Number(ev.sourceId)];
+            if (frow) this._focus(frow.name, isTrue((ev.parameterMap || {})[VALUE_KEY]));
         });
         rhmi.on('applicationStackChanged', (stack) => {
             const keys = stack && typeof stack === 'object' ? Object.keys(stack) : [];
@@ -188,6 +202,7 @@ class Vitals extends OnlineApp {
     _setVisible(visible) {
         if (this._shutdown || this._visible === visible) return;
         this._visible = visible;
+        this._syncGpu();
         if (visible) {
             this._written = {};
             this._ctl.request({ op: 'get' });
@@ -199,6 +214,70 @@ class Vitals extends OnlineApp {
         reports.forEach((r) => Promise.resolve(r).catch((err) => logger.warn('app status report failed: ' + (err && err.message))));
     }
 
+    /* ---- the drawn screen ---- */
+    _startGpu() {
+        if (this._gpu) return;
+        const gpu = new Gpu('ida_vitals', logger);
+        this._gpu = gpu;
+        gpu.on('ready', (screen, area) => {
+            const a = area && area.w >= 1000 && area.h >= 400 ? area
+                : screen.w === 2880 ? ID8_AREA : { x: 0, y: 0, w: screen.w, h: screen.h };
+            gpu.place(ui.placement(a));
+            this._ui.key = '';
+            this._syncGpu();
+        });
+        gpu.on('touch', (phase, x, y) => this._touch(phase, x, y));
+        // a touch outside our area went to the HMI and the renderer hid us: shown again if the page still is
+        gpu.on('closed', () => setTimeout(() => this._syncGpu(true), 700));
+        gpu.on('lost', () => { this._ui.key = ''; });
+        gpu.connect();
+        this._ui.timer = setInterval(() => this._frame(), FRAME_MS);
+    }
+
+    _syncGpu(again) {
+        const gpu = this._gpu;
+        if (!gpu) return;
+        const on = this._visible && gpu.ready && !this._shutdown;
+        if (again && on) gpu.visible = false;       // the renderer hid us itself: ask again
+        gpu.show(on);
+        if (on) { this._ui.key = ''; this._frame(); }
+    }
+
+    _frame() {
+        const gpu = this._gpu, u = this._ui;
+        if (!gpu || !gpu.ready || !gpu.visible) return;
+        const m = {
+            settings: this._reply && this._reply.settings, status: this._reply && this._reply.status, connected: this._connected,
+            data: this._last || {}, rows: model.ROWS, focus: u.focus, pressed: u.pressed,
+        };
+        const key = JSON.stringify([m.settings, m.status, m.connected, m.data, m.focus, m.pressed]);
+        const now = Date.now();
+        if (gpu.waiting && now - gpu.sentAt < 1000) return;
+        if (key === u.key && now - gpu.sentAt < 1000) return;
+        u.key = key;
+        u.targets = ui.draw(u.rec, m).targets;
+        gpu.claim([{ x: 0, y: 0, w: ui.W, h: ui.H }]);
+        gpu.frame(u.rec);
+    }
+
+    _focus(name, on) {
+        if (on) this._ui.focus = name;
+        else if (this._ui.focus === name) this._ui.focus = null;
+    }
+
+    _touch(phase, x, y) {
+        const u = this._ui, t = ui.hit(u.targets, x, y);
+        if (phase === 1) { u.down = t ? t.key : null; u.pressed = u.down; return; }
+        if (phase === 2) { if (!t || t.key !== u.down) u.pressed = null; return; }
+        if (phase !== 3) return;
+        const key = u.down;
+        u.down = null;
+        setTimeout(() => { if (!u.down) u.pressed = null; }, 150);
+        if (!t || t.key !== key) return;
+        const row = model.ROWS.find((r) => r.name === key);
+        if (row) this._press(row);
+    }
+
     _press(row) {
         const now = Date.now();
         if (now - (this._lastPress[row.name] || 0) < 250) return;     // the same press by both paths
@@ -207,7 +286,11 @@ class Vitals extends OnlineApp {
         const change = row.press(this._reply.settings);
         logger.info('press ' + row.name + ' -> ' + JSON.stringify(change));
         if (change === 'reset') this._ctl.request({ op: 'reset' });
-        else this._ctl.request({ op: 'set', settings: change });
+        else {
+            this._ctl.request({ op: 'set', settings: change });
+            Object.assign(this._reply.settings, change);      // shown at once; the service's answer follows
+            this._render();
+        }
     }
 
     /* writes a cell only when its value changed */
@@ -238,6 +321,8 @@ class Vitals extends OnlineApp {
         logger.info('shutting down (' + reason + ')');
         this._car.stop();
         this._ctl.close();
+        clearInterval(this._ui.timer);
+        if (this._gpu) this._gpu.close();
         this._shutdown = Promise.resolve()
             .then(() => this.destroyBundles().catch((err) => logger.info('destroyBundles: ' + (err && err.message))))
             .then(() => process.exit(0));

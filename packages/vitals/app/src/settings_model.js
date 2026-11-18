@@ -16,10 +16,12 @@ const NAMES = {
 const COOLANT_WARN = [95, 100, 105, 110, 115, 120, 125, 130];
 const OIL_WARN = [110, 115, 120, 125, 130, 135, 140, 145, 150];
 const GEARBOX_WARN = [100, 105, 110, 115, 120, 125, 130, 135, 140];
-const SHIFT_Y = [0, 20, 40, 60, 80, 100, 120, 140, -60, -40, -20];     // px, positive = lower
+const SHIFT = { min: -100, max: 200, step: 10 };   // px, positive = lower (the service's range)
+const ZOOM = { min: 70, max: 150, step: 5 };       // %
 
 function next(list, v) { return list[(list.indexOf(v) + 1) % list.length]; }
 function onOff(v) { return v ? 'On' : 'Off'; }
+function clamp(v, r) { return Math.max(r.min, Math.min(r.max, v)); }
 function shift(v) { return !v ? 'Default' : v > 0 ? v + ' px lower' : -v + ' px higher'; }
 function deg(c, s) { return s.tempUnit === 'F' ? Math.round(c * 9 / 5 + 32) + ' °F' : c + ' °C'; }
 
@@ -31,7 +33,10 @@ const ROWS = [
     { name: 'vtGearboxWarn', label: 'Gearbox oil warning', value: (s) => deg(s.gearboxWarn, s), press: (s) => ({ gearboxWarn: next(GEARBOX_WARN, s.gearboxWarn) }) },
     { name: 'vtAccent', label: 'Gauge colour', value: (s) => NAMES[s.accent], press: (s) => ({ accent: next(ACCENTS, s.accent) }) },
     { name: 'vtPressures', label: 'Tyre pressures', value: (s) => (s.pressures ? 'Shown' : 'Hidden'), press: (s) => ({ pressures: !s.pressures }) },
-    { name: 'vtPosition', label: 'Widget position', value: (s) => shift(s.shiftY), press: (s) => ({ shiftY: next(SHIFT_Y, s.shiftY || 0) }) },
+    { name: 'vtUp', label: 'Move widget up', value: (s) => shift(s.shiftY), press: (s) => ({ shiftY: clamp((s.shiftY || 0) - SHIFT.step, SHIFT) }) },
+    { name: 'vtDown', label: 'Move widget down', value: (s) => shift(s.shiftY), press: (s) => ({ shiftY: clamp((s.shiftY || 0) + SHIFT.step, SHIFT) }) },
+    { name: 'vtZoomIn', label: 'Widget bigger', value: (s) => (s.zoom || 100) + ' %', press: (s) => ({ zoom: clamp((s.zoom || 100) + ZOOM.step, ZOOM) }) },
+    { name: 'vtZoomOut', label: 'Widget smaller', value: (s) => (s.zoom || 100) + ' %', press: (s) => ({ zoom: clamp((s.zoom || 100) - ZOOM.step, ZOOM) }) },
     { name: 'vtDemo', label: 'Demo values', value: (s) => onOff(s.demo), press: (s) => ({ demo: !s.demo }) },
     { name: 'vtReset', label: 'Reset to defaults', value: () => '', press: () => 'reset' },
 ];
@@ -51,4 +56,4 @@ function statusText(reply, connected, car) {
     return parts.join('  |  ');
 }
 
-module.exports = { ROWS, TEMP_UNITS, PRESS_UNITS, ACCENTS, COOLANT_WARN, OIL_WARN, GEARBOX_WARN, SHIFT_Y, next, statusText };
+module.exports = { ROWS, TEMP_UNITS, PRESS_UNITS, ACCENTS, COOLANT_WARN, OIL_WARN, GEARBOX_WARN, SHIFT, ZOOM, next, statusText };

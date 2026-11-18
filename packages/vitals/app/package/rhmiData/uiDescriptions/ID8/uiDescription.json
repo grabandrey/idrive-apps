@@ -425,7 +425,7 @@
         },
         "30": {
           "type": "button",
-          "name": "vtPosition",
+          "name": "vtUp",
           "properties": {
             "Visible": {
               "value": 1,
@@ -439,7 +439,133 @@
           "rows": [
             {
               "PrimaryText": {
-                "value": "Widget position",
+                "value": "Move widget up",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "31": {
+          "type": "button",
+          "name": "vtDown",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "Move widget down",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "32": {
+          "type": "button",
+          "name": "vtZoomIn",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "Widget bigger",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "33": {
+          "type": "button",
+          "name": "vtZoomOut",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "Widget smaller",
                 "type": "Text"
               },
               "FrequencyText": {

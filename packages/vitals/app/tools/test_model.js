@@ -33,16 +33,21 @@ assert.strictEqual(press('vtAccent').accent, 'lightblue');
 assert.strictEqual(row('vtAccent').value(s), 'Light blue');
 assert.strictEqual(press('vtPressures').pressures, false);
 assert.strictEqual(row('vtPressures').value(s), 'Hidden');
-assert.strictEqual(row('vtPosition').value(s), 'Default');
-assert.strictEqual(press('vtPosition').shiftY, 20);
-assert.strictEqual(row('vtPosition').value(s), '20 px lower');
-for (let i = 0; i < 7; i++) press('vtPosition');
-assert.strictEqual(s.shiftY, -60);
-assert.strictEqual(row('vtPosition').value(s), '60 px higher');
+assert.strictEqual(row('vtUp').value(s), 'Default');
+assert.strictEqual(press('vtDown').shiftY, 10);
+assert.strictEqual(row('vtDown').value(s), '10 px lower');
+for (let i = 0; i < 30; i++) press('vtUp');
+assert.strictEqual(s.shiftY, -100, 'stops at the top of its range');
+assert.strictEqual(row('vtUp').value(s), '100 px higher');
 assert.strictEqual(svc.normalize({ shiftY: 500 }).shiftY, 0, 'a position out of range falls back');
+assert.strictEqual(press('vtZoomIn').zoom, 105);
+for (let i = 0; i < 30; i++) press('vtZoomOut');
+assert.strictEqual(s.zoom, 70, 'stops at its smallest');
+assert.strictEqual(svc.normalize({ zoom: 400 }).zoom, 100);
 assert.strictEqual(press('vtDemo').demo, true);
 press('vtReset');
 assert.strictEqual(s.shiftY, 0);
+assert.strictEqual(s.zoom, 100);
 assert.deepStrictEqual([s.tempUnit, s.pressUnit, s.coolantWarn, s.oilWarn, s.gearboxWarn, s.accent, s.pressures, s.demo],
     ['auto', 'auto', 115, 135, 120, 'blue', true, false]);
 
@@ -153,3 +158,81 @@ assert.strictEqual(gf(view.compose(svc.normalize({}), gd, now + 700000)), 'â€“ â
 /* the layout fits the layer */
 assert.ok(layout.tyre.yRear + layout.tyreText.dyP + 12 < layout.H - 40, 'room at the bottom');
 console.log('  gearbox, position: ok');
+
+/* ---- the drawn screen (src/ui.js) ---- */
+const ui = require('../src/ui.js');
+const full = svc.normalize({});
+const drawn = ui.draw(new ui.Recorder(), { settings: full, status: { renderer: 'connected', engine: true }, connected: true,
+    data: { coolant: 90, oil: 100, carTemp: 'C' }, rows: m.ROWS, focus: 'vtDemo', pressed: null });
+const keys = drawn.targets.map((t) => t.key).sort();
+assert.deepStrictEqual(keys, m.ROWS.map((r) => r.name).sort(), 'every settings row has a place on the drawn screen');
+drawn.targets.forEach((t) => assert.ok(t.x >= 0 && t.y >= 0 && t.x + t.w <= ui.W && t.y + t.h <= ui.H, t.key + ' on screen'));
+assert.strictEqual(ui.hit(drawn.targets, drawn.targets[0].x + 5, drawn.targets[0].y + 5).key, drawn.targets[0].key);
+assert.strictEqual(ui.hit(drawn.targets, 5, 5), null);
+assert.ok(drawn.rec.words().length > 100 && drawn.rec.atlases.length >= 3);
+// every op in the frame is one the renderer knows, with the right length
+{
+    const w = drawn.rec.words(), LEN = { 1: 2, 2: 6, 4: 7, 5: 8, 15: 10 };
+    let i = 0;
+    while (i < w.length) {
+        if (w[i] === 11) i += 4 + w[i + 3] * 8;
+        else { assert.ok(LEN[w[i]], 'op ' + w[i] + ' at ' + i); i += LEN[w[i]]; }
+    }
+    assert.strictEqual(i, w.length);
+}
+const pl = ui.placement({ x: 0, y: 76, w: 2880, h: 764 });
+assert.deepStrictEqual([pl.scale, pl.ox, pl.oy], [1, 0, 0]);
+console.log('  drawn screen: ok');
+
+/* ---- the renderer client (src/gpu.js) against a stand-in renderer ---- */
+const net = require('net');
+const os = require('os');
+const fs = require('fs');
+const { Gpu } = require('../src/gpu.js');
+const sockPath = path.join(os.tmpdir(), 'vitals-gpu-test-' + process.pid + '.sock');
+try { fs.unlinkSync(sockPath); } catch (e) { /* none */ }
+const seen = [];
+const server = net.createServer((c) => {
+    let buf = Buffer.alloc(0);
+    c.on('data', (d) => {
+        buf = Buffer.concat([buf, d]);
+        while (buf.length >= 8 && buf.length >= 8 + buf.readUInt32LE(4)) {
+            const type = buf.readUInt32LE(0), len = buf.readUInt32LE(4);
+            seen.push({ type, p: buf.slice(8, 8 + len) });
+            buf = buf.slice(8 + len);
+            if (type === 1) {           // HELLO: X_READY with an app area, then READY 2880x960
+                const x = Buffer.alloc(44); x.writeUInt32LE(32 | 1, 8);
+                [0, 76, 2880, 764].forEach((v, k) => x.writeInt32LE(v, 28 + k * 4));
+                const r = Buffer.alloc(16); r.writeUInt32LE(2880, 4); r.writeUInt32LE(960, 8); r.writeUInt32LE(1, 12);
+                const head = (t, p) => { const h = Buffer.alloc(8); h.writeUInt32LE(t, 0); h.writeUInt32LE(p.length, 4); return Buffer.concat([h, p]); };
+                c.write(Buffer.concat([head(0x4d520101, x), head(101, r)]));
+            }
+            if (type === 7) {           // FRAME: a tick, and a tap at 100, 200
+                const t = Buffer.alloc(12); t.writeUInt32LE(3, 0); t.writeFloatLE(100, 4); t.writeFloatLE(200, 8);
+                const head = (ty, p) => { const h = Buffer.alloc(8); h.writeUInt32LE(ty, 0); h.writeUInt32LE(p.length, 4); return Buffer.concat([h, p]); };
+                c.write(Buffer.concat([head(102, Buffer.alloc(8)), head(105, t)]));
+            }
+        }
+    });
+});
+server.listen(sockPath, () => {
+    const gpu = new Gpu('ida_vitals', quiet, [sockPath]);
+    let area = null, touch = null;
+    gpu.on('ready', (scr, a) => { area = a; gpu.place(ui.placement(a)); gpu.show(true); gpu.claim([{ x: 0, y: 0, w: ui.W, h: ui.H }]); gpu.frame(drawn.rec); });
+    gpu.on('touch', (ph, x, y) => { touch = [ph, x, y]; });
+    gpu.on('tick', () => setTimeout(() => {
+        gpu.close(); server.close();
+        try { fs.unlinkSync(sockPath); } catch (e) { /* gone */ }
+        assert.deepStrictEqual(area, { x: 0, y: 76, w: 2880, h: 764 });
+        assert.deepStrictEqual(touch, [3, 100, 200]);
+        const types = seen.map((s) => s.type);
+        assert.strictEqual(types[0], 1);
+        assert.ok(seen[0].p.toString().indexOf('proto=mgu-render/1') > 0);
+        [0x4d520001, 2, 3, 9, 4, 7].forEach((t) => assert.ok(types.indexOf(t) >= 0, 'sent message ' + t));
+        assert.ok(types.indexOf(4) < types.indexOf(7), 'the glyph atlases before the frame');
+        const frame = seen.find((s) => s.type === 7).p;
+        assert.strictEqual(frame.length, drawn.rec.words().length * 4);
+        console.log('  renderer client: ok');
+    }, 50));
+    gpu.connect();
+});
