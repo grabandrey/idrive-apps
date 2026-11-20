@@ -78,7 +78,8 @@ controller only. Anything else is refused before it reaches the car.
 | Situation | What the app does |
 |---|---|
 | a renewal is refused (the session lost) | opens the session and asks again at once, and logs how long the hold had lasted, the car's state and when the last renewal went through |
-| 5 refusals in a row | gives up: the switch goes OFF and the screen says what the body controller answered |
+| refused for now (conditions not correct: the body controller refuses while the car moves; busy; not in this session; no answer) | the switch stays ON (**ON · WAITING**, with the reason and the speed) and it asks again after 2, 5, 10, 20, then every 30 s, and at once when the car stops |
+| 5 refusals in a row that won't pass (not supported, out of range, bad length, security) | gives up: the switch goes OFF and the screen says what the body controller answered |
 | switched OFF | hands the output back and ends the session |
 | locked with the engine off (above), or the app stopping | hands it back; the switch stays ON |
 | the app crashing | nothing more is sent: the body controller ends the session after a few seconds and takes the output back by itself |

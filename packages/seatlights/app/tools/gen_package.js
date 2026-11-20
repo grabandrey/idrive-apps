@@ -165,6 +165,8 @@ write('manifest.json', {
          * state (notify only, "s", as the MIT-licensed idrive7-apps kit's Live Adjustments requires it on iDrive 8) */
         'de.bmw.infotainment.vehicle.CDS': { instances: ['1'], attributes: { statusEngineSpeed2: 'rs' } },
         'de.bmw.infrastructure.VehicleCondition': { instances: ['1'], attributes: { VehicleCondition: 's' } },
+        /* the speed: a stop is when to ask again after a refusal while moving (as Light Logger reads it on the G87) */
+        'de.bmw.infotainment.vehicle.Vehicle2': { instances: ['1'], attributes: { statusCarSpeed2: 'rs' } },
         'de.bmw.infotainment.personalization.SessionManager': '*',
     },
     services: { 'de.bmw.infotainment.telematic.oap.AppStatus': { instances: ['${userId}'] } },

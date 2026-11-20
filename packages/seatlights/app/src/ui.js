@@ -155,7 +155,7 @@ function fit(rec, style, s, maxW) {
 }
 
 /*
- * model: { on (the switch), holding (the BDC took it), bypassed (locked, engine off), note, warn, output, layout, focus, pressed }
+ * model: { on (the switch), holding (the BDC took it), bypassed (locked, engine off), waiting (refused for now), note, warn, output, layout, focus, pressed }
  * Returns { rec, targets: [{ key, x, y, w, h }] }.
  */
 function draw(rec, m) {
@@ -178,7 +178,7 @@ function draw(rec, m) {
     // the right: what it does, the switch
     const tx = 1400;
     rec.text('head', 'SEAT LIGHTS', tx, 220, C.faint, 'left', 6);
-    rec.text('title', !m.on ? 'OFF' : m.holding ? 'ON' : m.bypassed ? 'ON  ·  LOCKED' : 'ON ...', tx, 320, m.on ? C.text : C.dim);
+    rec.text('title', !m.on ? 'OFF' : m.holding ? 'ON' : m.bypassed ? 'ON  ·  LOCKED' : m.waiting ? 'ON  ·  WAITING' : 'ON ...', tx, 320, m.on ? C.text : C.dim);
     const note = m.note === 'On' || m.note === 'Off' ? (m.holding ? 'The logos are held on' : '') : m.note || '';
     rec.text('body', fit(rec, 'body', note, 1000), tx, 410, m.warn ? C.orange : m.holding ? C.green : C.dim);
     rec.text('small', 'Keeps the headrest logos lit until you switch it off. Off while the car is locked.', tx, 470, C.faint);

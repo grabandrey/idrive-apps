@@ -31,6 +31,11 @@
  *   const s = new SeatLight({ uds, log, output: 45, layout, statusDid });
  *   s.setOn(true | false)      s.state -> { on, holding, note, warn, layout, output }      s.stop()
  *   s.on('change'), s.on('save', { on, layout, statusDid })
+ *
+ * Refused for now (busy, conditions not correct: the body controller refuses while the car moves, not in this session,
+ * no answer): the switch stays ON, "Waiting", and it asks again after 2, 5, 10, 20, then every 30 s, at once when the car
+ * stops (car({ kmh })). Only refusals that won't pass (not supported, out of range, bad length, security) give up
+ * after MAX_FAILS in a row.
  */
 const EventEmitter = require('events');
 const { FORMATS } = require('./uds.js');
@@ -43,6 +48,11 @@ const LOCK_SETTLE_MS = 10000;     // locked must hold this long before the switc
 const CHECK_MS = 2000;            // while ON and not held: how often it tries again
 const SETTLE_MS = 700;
 const MAX_FAILS = 5;
+/* refusals that pass (busy, conditions not correct (often: the car is moving), not in this session, no answer):
+ * the switch stays ON and it asks again later, sooner once the car stands still. Only the others (not supported,
+ * out of range, bad length, security) count towards MAX_FAILS */
+const PASSING = [0x10, 0x21, 0x22, 0x78, 0x7e, 0x7f];
+const BACKOFF_MS = [2000, 5000, 10000, 20000, 30000];   // the first again soon: a session that hiccuped is usually back at once
 const STATUS_DIDS = [[0xe3, 0xb9], [0x45, 0x00]];
 const CONTROL = { 'E3B9': [0xe3, 0xb5], '4500': [0x45, 0x01] };
 const NEXT_LAYOUT = [0x12, 0x13, 0x31];
@@ -67,6 +77,9 @@ class SeatLight extends EventEmitter {
         this._lastRenew = 0;
         this._asserting = false; this._renewing = false;
         this.engine = null;                 // true running, false off, null not known yet
+        this.kmh = null;                    // the car's speed, null not known
+        this._waits = 0; this._retryAt = 0; // passing refusals in a row, and when to ask again
+        this.backoffMs = o.backoffMs || BACKOFF_MS;
         this.locked = null;                 // true parked and locked, false not, null not known
         this._heldSince = 0;
         this.checkMs = o.checkMs || CHECK_MS;
@@ -87,11 +100,18 @@ class SeatLight extends EventEmitter {
 
     get state() {
         return { on: this.on_, holding: this.holding, note: this.note, warn: this.warn, layout: this.layout, output: this.output,
-            value: this.value, busy: !!this._busy, bypassed: this.bypassed(), engine: this.engine, locked: this.locked };
+            value: this.value, busy: !!this._busy, bypassed: this.bypassed(), engine: this.engine, locked: this.locked,
+            waiting: this.on_ && !this.holding && this._retryAt > this.now() };
     }
 
-    /* the car's state, from the app: { engine: true | false } and / or { locked: true | false | null } */
+    /* the car's state, from the app: { engine: true | false }, { locked: true | false | null }, { kmh } */
     car(c) {
+        if (c && typeof c.kmh === 'number') {
+            const stopped = this.kmh !== null && this.kmh >= 3 && c.kmh < 1;
+            this.kmh = c.kmh;
+            // standing still again: refused while moving, asked again at once
+            if (stopped && this._retryAt) { this._retryAt = 0; this.log.info('seat lights: the car stopped: asking again'); }
+        }
         if (c && c.engine !== undefined && c.engine !== this.engine) {
             this.engine = c.engine;
             this.log.info('seat lights: engine ' + (c.engine ? 'running' : 'off'));
@@ -137,7 +157,7 @@ class SeatLight extends EventEmitter {
     setOn(on) {
         on = !!on;
         if (on === this.on_) return this._busy || Promise.resolve();
-        this.on_ = on; this.fails = 0;
+        this.on_ = on; this.fails = 0; this._waits = 0; this._retryAt = 0;
         this._save();
         if (!on) {
             this._stopTimers();
@@ -163,6 +183,8 @@ class SeatLight extends EventEmitter {
             }).then(() => { this._busy = null; });
             return this._busy;
         }
+        // refused for now: asked again at _retryAt (or once the car stops)
+        if (!this.holding && this._retryAt > this.now()) return Promise.resolve();
         // held: nothing to read. Each renewal's answer says the body controller took it, and a read waiting for its
         // answer would hold up the renewals behind it on the link (the logos blinked off for a second like that)
         if (this.holding) return Promise.resolve();
@@ -194,16 +216,29 @@ class SeatLight extends EventEmitter {
         if (this._keepalive) { clearInterval(this._keepalive); this._keepalive = null; }
     }
 
-    _failed(text) {
-        this.fails++;
+    /* what the car is doing, for the log */
+    _speedText() { return this.kmh === null ? '? km/h' : Math.round(this.kmh) + ' km/h'; }
+    _carNow() { return this._speedText() + ', engine ' + (this.engine === true ? 'running' : this.engine === false ? 'off' : '?'); }
+
+    _failed(text, r) {
         this.holding = false;
+        if (!r || (r[0] === 0x7f && PASSING.indexOf(r[2]) >= 0)) {
+            // passing: the switch stays ON, asked again later
+            const wait = this.backoffMs[Math.min(this._waits, this.backoffMs.length - 1)];
+            this._waits++;
+            this._retryAt = this.now() + wait;
+            this._say('Waiting: ' + text + ' (' + this._carNow() + '). Trying again in ' + Math.round(wait / 1000) + ' s' +
+                (this.kmh !== null && this.kmh >= 3 ? ', or as soon as the car stops' : ''));
+            return Promise.resolve();
+        }
+        this.fails++;
         if (this.fails >= MAX_FAILS) {
             this.on_ = false; this._save();
             this._stopTimers();
             this._say('Gave up after ' + this.fails + ' refusals in a row (' + text + '). Switch on to try again', true);
             return this._release('gave up');
         }
-        this._say(text + ' (' + this.fails + ' in a row, trying again)', true);
+        this._say(text.charAt(0).toUpperCase() + text.slice(1) + ' (' + this.fails + ' in a row, trying again)', true);
         return Promise.resolve();
     }
 
@@ -211,12 +246,13 @@ class SeatLight extends EventEmitter {
     _assert() {
         this._asserting = true;
         return this.uds.control(BDC, 0x10, [0x03]).then((s) => {
-            if (!s || s[0] !== 0x50) return this._failed('The body controller didn\'t open the session: ' + why(s));
+            if (!s || s[0] !== 0x50) return this._failed('the body controller didn\'t open the session: ' + why(s), s);
             this._session = true;
             return this.uds.control(BDC, 0x2f, this.ctl.concat(FORMATS[this.layout].on(this.element))).then((r) => {
-                if (!r || r[0] !== 0x6f) return this._failed('The body controller didn\'t take it: ' + why(r));
+                if (!r || r[0] !== 0x6f) return this._failed('the body controller didn\'t take it: ' + why(r), r);
                 if (!this.holding) this._heldSince = this.now();
                 this.holding = true; this.fails = 0; this._lastRenew = this.now();
+                this._waits = 0; this._retryAt = 0;
                 this._startKeepalive();
                 this._say('On');
                 return undefined;
@@ -230,7 +266,7 @@ class SeatLight extends EventEmitter {
         this._taken = [];
         this._say('First time: finding the layout this body controller takes');
         return this.uds.control(BDC, 0x10, [0x03]).then((s) => {
-            if (!s || s[0] !== 0x50) return this._failed('The body controller didn\'t open the session: ' + why(s));
+            if (!s || s[0] !== 0x50) return this._failed('the body controller didn\'t open the session: ' + why(s), s);
             this._session = true;
             const tryOne = (f) => {
                 if (f >= FORMATS.length) {
@@ -242,10 +278,10 @@ class SeatLight extends EventEmitter {
                 return this.uds.control(BDC, 0x2f, req).then((a) => {
                     this.log.info('seat lights: layout ' + (f + 1) + ' (2F ' + hex(req) + '): ' + (a && a[0] === 0x6f ? 'taken' : why(a)));
                     if (a && a[0] === 0x7f && NEXT_LAYOUT.indexOf(a[2]) >= 0) return tryOne(f + 1);
-                    if (!a || a[0] !== 0x6f) return this._failed('The body controller didn\'t take it: ' + why(a));
+                    if (!a || a[0] !== 0x6f) return this._failed('the body controller didn\'t take it: ' + why(a), a);
                     this._taken.push(f);
                     return new Promise((res) => setTimeout(res, this.settleMs)).then(() => this._read()).then((after) => {
-                        if (!after) return this._failed('Couldn\'t read the outputs back');
+                        if (!after) return this._failed('couldn\'t read the outputs back');
                         const others = after.map((v, i) => (i !== idx && v > 0 && !(before[i] > 0) ? i + 1 : null)).filter((x) => x !== null);
                         if (others.length) {
                             this.on_ = false; this._save(); this._stopTimers();
@@ -287,7 +323,7 @@ class SeatLight extends EventEmitter {
                 if (r && r[0] === 0x6f) { this._lastRenew = this.now(); return; }
                 // the session is gone, or the hold refused: ask again from the start
                 this.holding = false;
-                this._say('Renewal ' + why(r) + ' after ' + this._heldFor() + ' held (' + this._carText() + ', last renewal ' + this._sinceRenew() + ' before): asking again', true);
+                this._say('Renewal ' + why(r) + ' after ' + this._heldFor() + ' held (' + this._carText() + ', ' + this._speedText() + ', last renewal ' + this._sinceRenew() + ' before): asking again', true);
                 this._tick();
             }, () => { this._renewing = false; });
         }, this.refreshMs);
@@ -315,4 +351,4 @@ class SeatLight extends EventEmitter {
     }
 }
 
-module.exports = { SeatLight, OUTPUT, CHECK_MS, REFRESH_MS, MAX_FAILS };
+module.exports = { SeatLight, OUTPUT, CHECK_MS, REFRESH_MS, MAX_FAILS, PASSING, BACKOFF_MS };

@@ -66,7 +66,7 @@ function fakeBdc(layoutIndex) {
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function lightFor(bdc, opts) {
     const u = new uds.Uds(fakeLink(bdc.answer), log);
-    const s = new SeatLight(Object.assign({ uds: u, log, refreshMs: 15, checkMs: 25, settleMs: 5 }, opts || {}));
+    const s = new SeatLight(Object.assign({ uds: u, log, refreshMs: 15, checkMs: 25, settleMs: 5, backoffMs: [0, 60, 120] }, opts || {}));
     const saves = [];
     s.on('save', (x) => saves.push(JSON.parse(JSON.stringify(x))));
     if (!opts || !opts.carOff) s.car({ engine: true });            // the engine running, unless the test says otherwise
@@ -136,7 +136,7 @@ tests.push(() => {
             bdc.dropSession = true;
             return wait(10).then(() => { bdc.dropSession = false; return wait(80); });
         }).then(() => {
-            ok(/Renewal refused: .* held \(engine running, lock \?, last renewal [\d.]+ s before\): asking again/.test(notes.join('|')) && s.holding && bdc.held === 44,
+            ok(/Renewal refused: .* held \(engine running, lock \?, \? km\/h, last renewal [\d.]+ s before\): asking again/.test(notes.join('|')) && s.holding && bdc.held === 44,
                 'a refused renewal: logged with its context, held again');
             return s.stop();
         });
@@ -228,16 +228,62 @@ tests.push(() => {
     }));
 });
 tests.push(() => {
-    // refusals: gives up after 5, the switch goes OFF and says why
+    // refusals that won't pass (security access denied): gives up after 5, the switch goes OFF and says why
     const bdc = fakeBdc(1);
     return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9] }).then(({ s, saves }) => {
-        bdc.refuse = { sid: 0x2f, nrc: 0x22 };
+        bdc.refuse = { sid: 0x2f, nrc: 0x33 };
         return s.setOn(true).then(() => wait(250)).then(() => {
-            ok(!s.state.on && !s.holding && /Gave up after 5/.test(s.note) && /conditions not correct/.test(s.note), 'gives up after 5, says why');
+            ok(!s.state.on && !s.holding && /Gave up after 5/.test(s.note) && /security access denied/.test(s.note), 'gives up after 5, says why');
             ok(saves[saves.length - 1].on === false, 'the switch saved OFF');
             ok(bdc.log.filter((x) => /^2F E3 B5 03/.test(x)).length === 5, 'exactly 5 tries');
         });
     });
+});
+tests.push(() => {
+    // driving: the body controller drops the session, then refuses it while the car moves ("conditions not correct").
+    // The switch stays ON, waits (backing off), never gives up, and asks again at once when the car stops
+    const bdc = fakeBdc(1);
+    const notes = [];
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], backoffMs: [60, 120, 240] }).then(({ s, saves }) => {
+        s.on('change', () => notes.push(s.note));
+        s.car({ kmh: 0 });
+        return s.setOn(true).then(() => {
+            ok(s.holding, 'held, standing');
+            s.car({ kmh: 87 });
+            bdc.refuse = { sid: 0x10, nrc: 0x22 };       // moving: no session
+            bdc.dropSession = true;                       // and the one there is, dropped
+            return wait(20).then(() => { bdc.dropSession = false; return wait(500); });
+        }).then(() => {
+            const tries = bdc.log.filter((x) => x === '10 03').length;
+            ok(s.state.on && !s.holding && s.state.waiting && /^Waiting: the body controller didn't open the session: refused: conditions not correct \(87 km\/h, engine running\)/.test(s.note),
+                'refused while moving: the switch stays ON, waiting, says why with the speed');
+            ok(!/Gave up/.test(notes.join('|')) && saves[saves.length - 1].on === true, 'never gives up on it, ON kept');
+            ok(tries >= 2 && tries <= 5, 'backs off (' + tries + ' tries in 0.5 s, not one every check)');
+            ok(/Renewal refused: .*87 km\/h/.test(notes.join('|')), 'the dropped hold logged with the speed');
+            // the car stops: the body controller takes it again, at once
+            bdc.refuse = null;
+            s.car({ kmh: 0 });
+            return wait(40);
+        }).then(() => {
+            ok(s.holding && bdc.held === 44 && !s.state.waiting && s.note === 'On', 'the car stops: held again at once');
+            return s.setOn(false);
+        }).then(() => {
+            ok(!s.state.on && bdc.held === null && bdc.session === 1, 'OFF works after it all');
+        });
+    });
+});
+tests.push(() => {
+    // switching OFF while it waits: OFF at once, nothing more asked
+    const bdc = fakeBdc(1);
+    bdc.refuse = { sid: 0x10, nrc: 0x22 };
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], backoffMs: [30] }).then(({ s }) => s.setOn(true).then(() => {
+        ok(s.state.waiting, 'waiting');
+        return s.setOn(false);
+    }).then(() => {
+        ok(!s.state.on && s.note === 'Off', 'OFF while waiting');
+        bdc.log = [];
+        return wait(120);
+    }).then(() => ok(!bdc.log.some((x) => /^(10 03|2F)/.test(x)), 'nothing asked after OFF')));
 });
 tests.push(() => {
     // none of the layouts: the switch goes OFF, nothing held
@@ -296,7 +342,8 @@ const man = JSON.parse(fs.readFileSync(path.join(ROOT, 'package', 'manifest.json
 const tasu = man['com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu'];
 ok(tasu && tasu.methods.join() === 'sendTasuRequest' && tasu.broadcasts.join() === 'sendTasuResponse', 'manifest: the diagnostic link');
 ok(man['de.bmw.infotainment.vehicle.CDS'].attributes.statusEngineSpeed2 === 'rs' && man['de.bmw.infrastructure.VehicleCondition'].attributes.VehicleCondition === 's'
-    && !man['de.bmw.infotainment.lifecycle.lifecycle.Lifecycle'] && !man['de.bmw.infotainment.vehicle.Vehicle2'], 'manifest: the engine and the vehicle state (notify only), nothing else of the car');
+    && man['de.bmw.infotainment.vehicle.Vehicle2'].attributes.statusCarSpeed2 === 'rs' && !man['de.bmw.infotainment.lifecycle.lifecycle.Lifecycle'],
+    'manifest: the engine, the vehicle state (notify only) and the speed, nothing else of the car');
 const pj = JSON.parse(fs.readFileSync(path.join(ROOT, 'package', 'package.json'), 'utf8'));
 ok(pj.mguAppStartType === 'autostart' && pj.name === 'ida_seatlights', 'starts with the head unit');
 const uiDesc = JSON.parse(fs.readFileSync(path.join(ROOT, 'package/rhmiData/uiDescriptions/ID8/uiDescription.json'), 'utf8'));

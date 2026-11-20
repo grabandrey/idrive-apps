@@ -163,7 +163,16 @@ class SeatLightsApp extends OnlineApp {
             if (seen.length < 16 && seen.indexOf(raw) < 0) { seen.push(raw); logger.info('vehicle state ' + raw + (n === undefined ? ' (not known)' : ' = ' + n)); }
             this._light.car({ locked: n === undefined ? null : n <= 3 });
         };
+        // the speed (Vehicle2.statusCarSpeed2: 1/64 km/h, 65535 none; as Light Logger reads it on the G87): the body
+        // controller refuses while the car moves, so a stop is when to ask again
+        const speed = (v) => {
+            const raw = v && v.speedVehicleCentreOfGravity;
+            if (typeof raw !== 'number' || raw === 65535) return;
+            this._light.car({ kmh: raw * 0.015625 });
+        };
         this._link.open('de.bmw.infotainment.vehicle.CDS', '1', { fields: { statusEngineSpeed2: engine } })
+            .catch(() => null)
+            .then(() => this._link.open('de.bmw.infotainment.vehicle.Vehicle2', '1', { fields: { statusCarSpeed2: speed } }))
             .catch(() => null)
             .then(() => this._link.open('de.bmw.infrastructure.VehicleCondition', '1', { fields: { VehicleCondition: condition } }))
             .catch(() => logger.info('vehicle state not available: the switch is never bypassed'));
@@ -189,7 +198,7 @@ class SeatLightsApp extends OnlineApp {
     _model() {
         const st = this._light.state;
         const on = this._uds.ready ? st.on : this._wantOn;
-        return { on: on, holding: st.holding, bypassed: st.bypassed, note: this._uds.ready ? st.note : 'Waiting for the diagnostic link', warn: st.warn,
+        return { on: on, holding: st.holding, bypassed: st.bypassed, waiting: st.waiting, note: this._uds.ready ? st.note : 'Waiting for the diagnostic link', warn: st.warn,
             output: st.output, layout: st.layout, focus: this._ui.focus, pressed: this._ui.pressed };
     }
 
@@ -280,7 +289,7 @@ class SeatLightsApp extends OnlineApp {
         const m = this._model();
         this._set(STATUS, 'Text', m.note + '  |  lamp output ' + m.output + (m.layout !== null && m.layout !== undefined ? ', layout ' + (m.layout + 1) : ''));
         this._set(SWITCH, 'PrimaryText', 'Seat lights');
-        this._set(SWITCH, 'FrequencyText', m.on ? (m.holding ? 'ON' : m.bypassed ? 'ON (off while locked)' : 'ON (starting)') : 'OFF');
+        this._set(SWITCH, 'FrequencyText', m.on ? (m.holding ? 'ON' : m.bypassed ? 'ON (off while locked)' : m.waiting ? 'ON (waiting)' : 'ON (starting)') : 'OFF');
         this._set(SWITCH, 'FrequencyVisible', true);
         Promise.resolve(this.rhmiApplication.flush && this.rhmiApplication.flush()).catch(() => { /* next render */ });
     }
