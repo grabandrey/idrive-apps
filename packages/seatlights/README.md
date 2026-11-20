@@ -14,6 +14,22 @@ stay lit with them. One output feeds both, so the app can't light one without th
 
 ## Use
 
+### The screen
+
+Just the seat, **SEAT LIGHTS ON / OFF** and the switch: no messages. What the app does is on the **Logs** screen
+(the **Logs** button, bottom right): newest first, **Older** / **Newer** / **Close**. The same lines are in
+`seatlights.log` next to the settings (the old one kept as `.1` past 512 KB) and in the head unit's log (`STLT`).
+Without the Renderer, the plain list has a **Seat lights ON / OFF** row and a **Logs** row that shows the log below.
+
+### While driving
+
+On the G87 the body controller lets go of the logos after a while on the move, and refuses them again while the
+car moves (probably because output 45 also feeds the **exterior** door handle lights, and body controllers often
+block diagnostic control of exterior lights above some speed). The app keeps asking every 2 seconds and at once
+when the car stops, so they come back as soon as the body controller allows it. The log says when they went dark
+(`Renewal refused … held (…, 63 km/h, …)`) and when they came back (`back on after 56 s dark (0 km/h, …)`): that
+shows whether it's a speed limit, and at what speed.
+
 1. In MGU Store, add the source `grabandrey/idrive-apps` (branch `main`) if you haven't, and install **Seat Lights**
    (`ida_seatlights`). For the drawn screen, also install **Renderer** (`mgu-render`) from MGU Store's own source.
    Without it, the screen is the head unit's plain list: a status line and a **Seat lights ON / OFF** row.
@@ -78,7 +94,7 @@ controller only. Anything else is refused before it reaches the car.
 | Situation | What the app does |
 |---|---|
 | a renewal is refused (the session lost) | opens the session and asks again at once, and logs how long the hold had lasted, the car's state and when the last renewal went through |
-| refused for now (conditions not correct: the body controller refuses while the car moves; busy; not in this session; no answer) | the switch stays ON (**ON · WAITING**, with the reason and the speed) and it asks again after 2, 5, 10, 20, then every 30 s, and at once when the car stops |
+| refused for now (conditions not correct: the body controller refuses while the car moves; busy; not in this session; no answer) | the switch stays ON and it asks again every 2 s, and at once when the car stops: the logos come back the moment the body controller allows it |
 | 5 refusals in a row that won't pass (not supported, out of range, bad length, security) | gives up: the switch goes OFF and the screen says what the body controller answered |
 | switched OFF | hands the output back and ends the session |
 | locked with the engine off (above), or the app stopping | hands it back; the switch stays ON |

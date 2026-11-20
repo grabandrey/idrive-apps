@@ -9,12 +9,21 @@ const ui = require('../src/ui.js');
 
 const out = process.argv[2] || path.join(__dirname, '..', '..', 'design', 'app_preview.html');
 const variant = process.argv[3] || 'on';
+/* a sample drive's log, for the logs variant */
+const T = new Date(2026, 10, 20, 17, 42, 0).getTime();
+const sampleLogs = [
+    [0, 'info', 'Seat Lights ida_seatlights starting; switch ON'], [2, 'info', 'seat lights: engine running'], [3, 'info', 'seat lights: On'],
+    [95, 'warn', 'seat lights: Renewal refused: not supported in this session after 92 s held (engine running, unlocked, 63 km/h, last renewal 1 s before): asking again'],
+    [95, 'info', 'seat lights: Waiting: the body controller didn\'t open the session: refused: conditions not correct (63 km/h, engine running). Trying again every 2 s, and as soon as the car stops'],
+    [151, 'info', 'seat lights: the car stopped: asking again'], [151, 'info', 'seat lights: back on after 56 s dark (0 km/h, engine running)'], [151, 'info', 'seat lights: On'],
+].map((x) => ({ t: T + x[0] * 1000, level: x[1], text: x[2] }));
 const models = {
     on: { on: true, holding: true, note: 'On', warn: false, output: 45, layout: 1 },
     off: { on: false, holding: false, note: 'Off', warn: false, output: 45, layout: 1 },
     waiting: { on: true, holding: false, bypassed: true, note: 'On: off while the car is locked', warn: false, output: 45, layout: 1 },
+    logs: { view: 'logs', logs: sampleLogs, logPage: 0, on: true, holding: true },
 };
-const { rec } = ui.draw(new ui.Recorder(), Object.assign({ focus: 'slSwitch' }, models[variant]));
+const { rec } = ui.draw(new ui.Recorder(), Object.assign({ focus: variant === 'logs' ? null : 'slSwitch' }, models[variant]));
 const words = Array.from(rec.words());
 const atlases = rec.atlases.map((a) => ({ id: a.id, w: a.w, h: a.h, alpha: a.alpha.toString('base64') }));
 /* the pictures a frame draws: premultiplied RGBA, as the renderer gets them */

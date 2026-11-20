@@ -6,9 +6,10 @@
  *
  *   Seat Lights      (           )          SEAT LIGHTS
  *                    (  the seat ) <- the     ON                                  [====( )]
- *                    (  its top  )    picture  The logos are held on
- *                    (           )             Keeps the headrest logos lit ...
- *                                                        lamp output 45 · layout 2 · ...
+ *                    (  its top  )    picture
+ *                    (           )                                                   [ Logs ]
+ *
+ * Logs (bottom right) shows the app's log in place of it: newest first, Older / Newer / Close.
  *
  * The picture is the user's own render of the seat (design/seat_off.png, seat_on.png, baked by tools/bake_images.py):
  * the OFF one, or the ON one with the logo lit, swapped with the switch. The renderer draws it (op 18, IMAGE) from
@@ -158,13 +159,63 @@ function fit(rec, style, s, maxW) {
  * model: { on (the switch), holding (the BDC took it), bypassed (locked, engine off), waiting (refused for now), note, warn, output, layout, focus, pressed }
  * Returns { rec, targets: [{ key, x, y, w, h }] }.
  */
+/* the Logs screen: log lines, newest first, a page at a time */
+const LOG_PER_PAGE = 11;
+const pad2 = (n) => (n < 10 ? '0' : '') + n;
+function clock(t) { const d = new Date(t); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()); }
+function logPages(n, per) { return Math.max(1, Math.ceil(n / (per || LOG_PER_PAGE))); }
+/* page 0 is the newest: [{ t, level, text }], newest first */
+function logLines(lines, page, per) {
+    per = per || LOG_PER_PAGE;
+    const newest = (lines || []).slice().reverse();
+    return newest.slice(page * per, page * per + per);
+}
+function logText(l) { return clock(l.t) + '  ' + (l.level === 'info' ? '' : l.level.toUpperCase() + '  ') + l.text.replace(/^seat lights: /, ''); }
+
+function pill(rec, m, targets, key, label, x, y, w, h, fill) {
+    rec.rrect(x, y, w, h, h / 2, m.focus === key ? [33, 43, 64, 255] : fill || C.tile);
+    rec.text('body', label, x + w / 2, y + h / 2 + 12, C.dim, 'center');
+    if (m.pressed === key) rec.rrect(x, y, w, h, h / 2, [255, 255, 255, 30]);
+    if (m.focus === key) rec.stroke(x, y, w, h, h / 2, 4, C.accent);
+    targets.push({ key: key, x: x, y: y, w: w, h: h });
+}
+
+/*
+ * model: { view: 'main' | 'logs', on (the switch), holding (the BDC took it: the lit picture), logs: [{ t, level, text }],
+ *          logPage, focus, pressed }
+ * The main view says only ON or OFF; what happens is on the Logs screen (the Logs button, bottom right).
+ * Returns { rec, targets: [{ key, x, y, w, h }] }.
+ */
 function draw(rec, m) {
     rec.reset();
     const targets = [];
     rec.clear(C.bg);
-    rec.text('title', 'Seat Lights', 90, 86, C.text);
 
-    // the seat: its top, the full height, proportions kept; lit, a faint light behind the headrest
+    if (m.view === 'logs') {
+        rec.text('title', 'Seat Lights', 90, 86, C.text);
+        rec.text('head', 'LOGS', 420, 84, C.faint, 'left', 6);
+        const L = { x: 90, y: 120, w: W - 180, h: 520 };
+        rec.rrect(L.x, L.y, L.w, L.h, 28, C.card);
+        const all = m.logs || [];
+        const pages = logPages(all.length), page = Math.min(m.logPage || 0, pages - 1);
+        const lines = logLines(all, page);
+        if (!lines.length) rec.text('body', 'Nothing logged yet.', L.x + 44, L.y + 80, C.dim);
+        lines.forEach((l, i) => {
+            const y = L.y + 62 + i * 44;
+            rec.text('small', clock(l.t), L.x + 44, y, C.faint);
+            const col = l.level === 'error' ? [229, 67, 46, 255] : l.level === 'warn' ? C.orange : C.dim;
+            rec.text('small', fit(rec, 'small', l.text.replace(/^seat lights: /, ''), L.w - 260), L.x + 190, y, col);
+            if (i < lines.length - 1) rec.rect(L.x + 44, y + 15, L.w - 88, 1, C.line);
+        });
+        rec.text('small', 'Page ' + (page + 1) + ' of ' + pages + '  ·  newest first  ·  also in seatlights.log', L.x, 700, C.faint);
+        pill(rec, m, targets, 'slOlder', 'Older', W - 120 - 200 - 20 - 200 - 20 - 220, 664, 200, 64);
+        pill(rec, m, targets, 'slNewer', 'Newer', W - 120 - 200 - 20 - 220, 664, 200, 64);
+        pill(rec, m, targets, 'slLogs', 'Close', W - 120 - 220, 664, 220, 64);
+        return { rec: rec, targets: targets };
+    }
+
+    rec.text('title', 'Seat Lights', 90, 86, C.text);
+    // the seat: its top, the full height, proportions kept; lit (the logos held), a faint light behind the headrest
     const ph = H, pw = Math.round(PIC.w * ph / PIC.h), px = 400, py = 0;
     if (m.holding) {
         const cx = px + pw * 0.42, cy = py + ph * 0.42;
@@ -175,27 +226,19 @@ function draw(rec, m) {
     }
     rec.image(m.holding ? PIC.on : PIC.off, px, py, pw, ph, 0);
 
-    // the right: what it does, the switch
+    // the right: ON or OFF, and the switch; nothing more
     const tx = 1400;
-    rec.text('head', 'SEAT LIGHTS', tx, 220, C.faint, 'left', 6);
-    rec.text('title', !m.on ? 'OFF' : m.holding ? 'ON' : m.bypassed ? 'ON  ·  LOCKED' : m.waiting ? 'ON  ·  WAITING' : 'ON ...', tx, 320, m.on ? C.text : C.dim);
-    const note = m.note === 'On' || m.note === 'Off' ? (m.holding ? 'The logos are held on' : '') : m.note || '';
-    rec.text('body', fit(rec, 'body', note, 1000), tx, 410, m.warn ? C.orange : m.holding ? C.green : C.dim);
-    rec.text('small', 'Keeps the headrest logos lit until you switch it off. Off while the car is locked.', tx, 470, C.faint);
-
-    const sw = 300, sh = 140, sx = W - 120 - sw, sy = 210, r = sh / 2;
-    const onC = m.holding ? C.green : m.on ? C.orange : C.track;
-    rec.rrect(sx, sy, sw, sh, r, onC);
+    rec.text('head', 'SEAT LIGHTS', tx, 300, C.faint, 'left', 6);
+    rec.text('title', m.on ? 'ON' : 'OFF', tx, 400, m.on ? C.text : C.dim);
+    const sw = 300, sh = 140, sx = W - 120 - sw, sy = 280, r = sh / 2;
+    rec.rrect(sx, sy, sw, sh, r, m.on ? C.green : C.track);
     const kx = m.on ? sx + sw - r : sx + r;
     rec.rrect(kx - r + 12, sy + 12, sh - 24, sh - 24, r - 12, C.text);
     if (m.pressed === 'slSwitch') rec.rrect(sx, sy, sw, sh, r, [255, 255, 255, 40]);
     if (m.focus === 'slSwitch') rec.stroke(sx - 10, sy - 10, sw + 20, sh + 20, r + 10, 5, C.accent);
     targets.push({ key: 'slSwitch', x: sx - 20, y: sy - 20, w: sw + 40, h: sh + 40 });
 
-    rec.rect(tx, 560, W - 120 - tx, 2, C.line);
-    const info = 'Lamp output ' + (m.output || 45) + (m.layout !== null && m.layout !== undefined ? '  ·  layout ' + (m.layout + 1) : '  ·  layout found the first time it goes on')
-        + '  ·  held through the body controller';
-    rec.text('small', info, tx, 620, C.faint);
+    pill(rec, m, targets, 'slLogs', 'Logs', W - 120 - 180, 664, 180, 64, C.card);
     return { rec: rec, targets: targets };
 }
 
@@ -215,4 +258,4 @@ function placement(area) {
         ox: Math.round((area.w - W * scale) / 2), oy: Math.round((area.h - H * scale) / 2) };
 }
 
-module.exports = { W, H, OP, PIC, Recorder, draw, hit, placement, atlas, pack, fit };
+module.exports = { W, H, OP, PIC, LOG_PER_PAGE, Recorder, draw, hit, placement, atlas, pack, fit, logPages, logLines, logText };

@@ -20,12 +20,18 @@ const { Uds, IFACE: TASU } = require('./uds.js');
 const { SeatLight } = require('./seat_light.js');
 const { Gpu } = require('./gpu.js');
 const ui = require('./ui.js');
+const { LogRing } = require('./log_ring.js');
 
-const logger = logging.getSDKLogger();
+/* the app's log: the head unit's (STLT), the Logs screen's lines, and seatlights.log next to the settings */
+const SETTINGS = settingsFile('seatlights.json');
+const logger = new LogRing(logging.getSDKLogger(), SETTINGS ? path.join(path.dirname(SETTINGS), 'seatlights.log') : null);
 
 const STATE = 'ST_OnlineApps_SeatLights';
 const STATUS = 'slStatus';
 const SWITCH = 'slSwitch';
+const LOGS = 'slLogs', OLDER = 'slOlder', NEWER = 'slNewer';
+const BUTTONS = [SWITCH, LOGS, OLDER, NEWER];
+const LINE_ROWS = 30;              // the plain list's log rows (slLine0 ..)
 const RENDER_MS = 1000;
 const FRAME_MS = 100;
 const ID8_AREA = { x: 0, y: 76, w: 2880, h: 764 };
@@ -81,7 +87,10 @@ class SeatLightsApp extends OnlineApp {
         this._gpu = null;
         this._ui = { rec: new ui.Recorder(), targets: [], focus: null, pressed: null, down: null, key: '', timer: null };
 
-        this._file = settingsFile('seatlights.json');
+        this._file = SETTINGS;
+        this._view = 'main';                // main | logs
+        this._logPage = 0;                  // logs: how many pages back from the newest
+        logger.on('line', () => { if (this._view === 'logs') this._dirty = true; });
         let saved = {};
         try { saved = JSON.parse(fs.readFileSync(this._file, 'utf8') || '{}') || {}; } catch (e) { /* first start */ }
         this._wantOn = saved.on === true;
@@ -178,10 +187,24 @@ class SeatLightsApp extends OnlineApp {
             .catch(() => logger.info('vehicle state not available: the switch is never bypassed'));
     }
 
-    _toggle() {
+    /* a press, from the drawn screen or the HMI list: the switch, Logs (open / close), older / newer log lines */
+    _press(name) {
         const now = Date.now();
-        if (now - this._lastPress < 400) return;            // the same press by both paths
-        this._lastPress = now;
+        if (now - (this._pressedAt && this._pressedAt[name] || 0) < 400) return;     // the same press by both paths
+        this._pressedAt = this._pressedAt || {};
+        this._pressedAt[name] = now;
+        if (name === SWITCH) this._toggle();
+        else if (name === LOGS) { this._view = this._view === 'logs' ? 'main' : 'logs'; this._logPage = 0; this._written = {}; }
+        else if (name === OLDER && this._view === 'logs') this._logPage = Math.min(this._logPage + 1, ui.logPages(logger.lines.length, this._perPage()) - 1);
+        else if (name === NEWER && this._view === 'logs') this._logPage = Math.max(0, this._logPage - 1);
+        this._dirty = true;
+        this._render();
+    }
+
+    /* log lines a page: the drawn screen's, or the plain list's rows */
+    _perPage() { return this._gpu && this._gpu.ready ? ui.LOG_PER_PAGE : LINE_ROWS; }
+
+    _toggle() {
         if (!this._uds.ready) {
             this._wantOn = !this._wantOn;
             logger.info('switch ' + (this._wantOn ? 'ON' : 'OFF') + ' before the diagnostic link is ready: applied once it is');
@@ -198,7 +221,8 @@ class SeatLightsApp extends OnlineApp {
     _model() {
         const st = this._light.state;
         const on = this._uds.ready ? st.on : this._wantOn;
-        return { on: on, holding: st.holding, bypassed: st.bypassed, waiting: st.waiting, note: this._uds.ready ? st.note : 'Waiting for the diagnostic link', warn: st.warn,
+        return { view: this._view, logs: this._view === 'logs' ? logger.lines : null, logPage: this._logPage,
+            on: on, holding: st.holding, bypassed: st.bypassed, waiting: st.waiting, note: this._uds.ready ? st.note : 'Waiting for the diagnostic link', warn: st.warn,
             output: st.output, layout: st.layout, focus: this._ui.focus, pressed: this._ui.pressed };
     }
 
@@ -208,16 +232,20 @@ class SeatLightsApp extends OnlineApp {
         this._state = rhmi.getByName(STATE);
         if (!this._state) return Promise.reject(new Error('uiDescription has no ' + STATE));
         this._comps[STATUS] = rhmi.getByName(STATUS);
-        const sw = rhmi.getByName(SWITCH);
-        if (sw) {
-            this._comps[SWITCH] = sw;
-            try { this._byId[Number(sw.getId())] = SWITCH; } catch (e) { /* events from the component only */ }
-            sw.on('action', () => this._toggle());
-            sw.on('focus', (ev) => this._focus(SWITCH, isTrue(ev && ev.value)));
-        }
+        BUTTONS.forEach((name) => {
+            const comp = rhmi.getByName(name);
+            if (!comp) { logger.warn('uiDescription has no ' + name); return; }
+            this._comps[name] = comp;
+            try { this._byId[Number(comp.getId())] = name; } catch (e) { /* events from the component only */ }
+            comp.on('action', () => this._press(name));
+            comp.on('focus', (ev) => this._focus(name, isTrue(ev && ev.value)));
+        });
+        for (let i = 0; i < LINE_ROWS; i++) this._comps['slLine' + i] = rhmi.getByName('slLine' + i);
         rhmi.on('userEvent', (ev) => {
-            if (ev && ev.eventType === 'ACTION' && this._byId[Number(ev.sourceId)]) this._toggle();
-            if (ev && ev.eventType === 'FOCUS' && this._byId[Number(ev.sourceId)]) this._focus(SWITCH, isTrue((ev.parameterMap || {})[VALUE_KEY]));
+            const name = ev && this._byId[Number(ev.sourceId)];
+            if (!name) return;
+            if (ev.eventType === 'ACTION') this._press(name);
+            if (ev.eventType === 'FOCUS') this._focus(name, isTrue((ev.parameterMap || {})[VALUE_KEY]));
         });
         rhmi.on('applicationStackChanged', (stack) => {
             const keys = stack && typeof stack === 'object' ? Object.keys(stack) : [];
@@ -287,10 +315,19 @@ class SeatLightsApp extends OnlineApp {
         this._dirty = false;
         if (!this.rhmiApplication || !this._state) return;
         const m = this._model();
-        this._set(STATUS, 'Text', m.note + '  |  lamp output ' + m.output + (m.layout !== null && m.layout !== undefined ? ', layout ' + (m.layout + 1) : ''));
+        // the plain list: the switch's row says ON or OFF and nothing more; Logs shows the log in the rows below
+        this._set(STATUS, 'Text', '');
         this._set(SWITCH, 'PrimaryText', 'Seat lights');
-        this._set(SWITCH, 'FrequencyText', m.on ? (m.holding ? 'ON' : m.bypassed ? 'ON (off while locked)' : m.waiting ? 'ON (waiting)' : 'ON (starting)') : 'OFF');
+        this._set(SWITCH, 'FrequencyText', m.on ? 'ON' : 'OFF');
         this._set(SWITCH, 'FrequencyVisible', true);
+        this._set(LOGS, 'PrimaryText', this._view === 'logs' ? 'Close the logs' : 'Logs');
+        this._set(OLDER, 'PrimaryText', this._view === 'logs' ? 'Older' : '');
+        this._set(NEWER, 'PrimaryText', this._view === 'logs' ? 'Newer' : '');
+        const lines = this._view === 'logs' ? ui.logLines(logger.lines, this._logPage, LINE_ROWS) : [];
+        for (let i = 0; i < LINE_ROWS; i++) {
+            const l = lines[i];
+            this._set('slLine' + i, 'PrimaryText', l ? ui.logText(l) : '');
+        }
         Promise.resolve(this.rhmiApplication.flush && this.rhmiApplication.flush()).catch(() => { /* next render */ });
     }
 
@@ -332,7 +369,8 @@ class SeatLightsApp extends OnlineApp {
         const gpu = this._gpu, u = this._ui;
         if (!gpu || !gpu.ready || !gpu.visible) return;
         const m = this._model();
-        const key = JSON.stringify(m);
+        const last = logger.lines[logger.lines.length - 1];
+        const key = JSON.stringify(Object.assign({}, m, { logs: m.logs ? m.logs.length + ':' + (last && last.t + last.text) : null }));
         const now = Date.now();
         if (gpu.waiting && now - gpu.sentAt < 1000) return;
         if (key === u.key && now - gpu.sentAt < 1000) return;
@@ -355,7 +393,7 @@ class SeatLightsApp extends OnlineApp {
         const key = u.down;
         u.down = null;
         setTimeout(() => { if (!u.down) u.pressed = null; }, 150);
-        if (t && t.key === key && key === SWITCH) this._toggle();
+        if (t && t.key === key && BUTTONS.indexOf(key) >= 0) this._press(key);
     }
 
     _stop(reason) {

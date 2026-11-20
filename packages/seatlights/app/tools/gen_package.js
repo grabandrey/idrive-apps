@@ -28,7 +28,8 @@ const STRINGS = { SID_SL_TITLE: 'Seat Lights' };
 const STATE = 'ST_OnlineApps_SeatLights';
 
 /* the one screen: title, status line, the switch */
-const ROWS = [[21, 'slSwitch', 'Seat lights']];
+const ROWS = [[21, 'slSwitch', 'Seat lights'], [22, 'slLogs', 'Logs'], [23, 'slOlder', ''], [24, 'slNewer', '']]
+    .concat(Array.apply(null, Array(30)).map((_, i) => [40 + i, 'slLine' + i, '']));     // the log, in the plain list
 
 function write(rel, data) {
     const f = path.join(PKG, rel);

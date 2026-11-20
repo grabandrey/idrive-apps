@@ -244,7 +244,8 @@ tests.push(() => {
     // The switch stays ON, waits (backing off), never gives up, and asks again at once when the car stops
     const bdc = fakeBdc(1);
     const notes = [];
-    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], backoffMs: [60, 120, 240] }).then(({ s, saves }) => {
+    const infos = [];
+    return lightFor(bdc, { layout: 1, statusDid: [0xe3, 0xb9], backoffMs: [60, 120, 240], log: { info: (x) => infos.push(x), warn: () => {}, error: () => {} } }).then(({ s, saves }) => {
         s.on('change', () => notes.push(s.note));
         s.car({ kmh: 0 });
         return s.setOn(true).then(() => {
@@ -259,6 +260,7 @@ tests.push(() => {
                 'refused while moving: the switch stays ON, waiting, says why with the speed');
             ok(!/Gave up/.test(notes.join('|')) && saves[saves.length - 1].on === true, 'never gives up on it, ON kept');
             ok(tries >= 2 && tries <= 5, 'backs off (' + tries + ' tries in 0.5 s, not one every check)');
+            ok(notes.filter((x) => /^Waiting/.test(x)).length === 1, 'a run of refusals logged once, not each try');
             ok(/Renewal refused: .*87 km\/h/.test(notes.join('|')), 'the dropped hold logged with the speed');
             // the car stops: the body controller takes it again, at once
             bdc.refuse = null;
@@ -266,6 +268,7 @@ tests.push(() => {
             return wait(40);
         }).then(() => {
             ok(s.holding && bdc.held === 44 && !s.state.waiting && s.note === 'On', 'the car stops: held again at once');
+            ok(infos.some((x) => /^seat lights: back on after [\d.]+ s dark \(0 km\/h, engine running\)$/.test(x)), 'the return logged: how long dark, the speed');
             return s.setOn(false);
         }).then(() => {
             ok(!s.state.on && bdc.held === null && bdc.session === 1, 'OFF works after it all');
@@ -296,10 +299,32 @@ tests.push(() => {
 
 /* ---- the screen ---- */
 const on = ui.draw(new ui.Recorder(), { on: true, holding: true, note: 'On', output: 45, layout: 1, focus: 'slSwitch' });
-ok(on.targets.length === 1 && on.targets[0].key === 'slSwitch', 'the switch is the one target');
+ok(on.targets.map((t) => t.key).join() === 'slSwitch,slLogs', 'main screen: the switch and Logs');
 const t0 = on.targets[0];
 ok(ui.hit(on.targets, t0.x + t0.w / 2, t0.y + t0.h / 2).key === 'slSwitch' && ui.hit(on.targets, 10, 10) === null, 'hit');
-ok(t0.x >= 0 && t0.y >= 0 && t0.x + t0.w <= ui.W && t0.y + t0.h <= ui.H && on.rec.n > 50, 'drawn on screen');
+ok(on.targets.every((t) => t.x >= 0 && t.y >= 0 && t.x + t.w <= ui.W && t.y + t.h <= ui.H) && on.rec.n > 50, 'drawn on screen');
+const logsT = on.targets[1];
+ok(logsT.x > ui.W * 0.8 && logsT.y > ui.H * 0.8, 'Logs: bottom right');
+// no messages on the main screen: whatever the note, the same frame
+const plain = ui.draw(new ui.Recorder(), { on: true, holding: false, note: 'x' }).rec.words().join();
+ok(plain === ui.draw(new ui.Recorder(), { on: true, holding: false, waiting: true, bypassed: true, warn: true, note: 'Waiting: refused: conditions not correct (87 km/h)' }).rec.words().join(),
+    'main screen: no messages, only ON / OFF');
+// the Logs screen: newest first, a page at a time, Older / Newer / Close
+const logs = [];
+for (let i = 0; i < 25; i++) logs.push({ t: Date.UTC(2026, 10, 20, 12, 0, i), level: i === 24 ? 'warn' : 'info', text: 'seat lights: line ' + i });
+const lv = ui.draw(new ui.Recorder(), { view: 'logs', logs: logs, logPage: 0 });
+ok(lv.targets.map((t) => t.key).join() === 'slOlder,slNewer,slLogs' && lv.rec.images.length === 0, 'logs screen: Older, Newer, Close; no picture');
+ok(ui.logPages(25) === 3 && ui.logLines(logs, 0).map((l) => l.text).slice(0, 2).join() === 'seat lights: line 24,seat lights: line 23'
+    && ui.logLines(logs, 2).length === 3 && ui.logLines(logs, 1, 30).length === 0, 'logs: newest first, pages');
+ok(/^\d\d:\d\d:\d\d {2}WARN {2}line 24$/.test(ui.logText(logs[24])) && /^\d\d:\d\d:\d\d {2}line 3$/.test(ui.logText(logs[3])), 'a log line in the plain list');
+ok(ui.draw(new ui.Recorder(), { view: 'logs', logs: [], logPage: 5 }).rec.n > 10, 'logs screen, nothing logged');
+/* the log: the SDK's log too, the last lines kept, a file */
+const { LogRing } = require('../src/log_ring.js');
+const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'seatlights-'));
+const base = []; const ring = new LogRing({ info: (x) => base.push(x), warn: (x) => base.push('W ' + x) }, path.join(tmp, 'l.log'), { max: 3, maxBytes: 60 });
+['a', 'b', 'c', 'd'].forEach((x) => ring.info(x)); ring.warn('e');
+ok(ring.lines.map((l) => l.text).join() === 'c,d,e' && base.join() === 'a,b,c,d,W e', 'log: the last lines kept, the SDK\'s log too');
+ok(fs.existsSync(path.join(tmp, 'l.log.1')) && / WARN e\n$/.test(fs.readFileSync(path.join(tmp, 'l.log'), 'utf8')), 'log: the file, restarted past its size');
 const offDrawn = ui.draw(new ui.Recorder(), { on: false, holding: false, note: 'Off', output: 45, layout: null });
 ok(offDrawn.rec.n > 50 && offDrawn.rec.images.join() === String(ui.PIC.off) && on.rec.images.join() === String(ui.PIC.on), 'the OFF picture off, the ON picture held');
 ok(ui.draw(new ui.Recorder(), { on: true, holding: false, bypassed: true, note: 'x', output: 45, layout: 1 }).rec.images.join() === String(ui.PIC.off), 'ON but not held (locked): the OFF picture');
@@ -349,7 +374,8 @@ ok(pj.mguAppStartType === 'autostart' && pj.name === 'ida_seatlights', 'starts w
 const uiDesc = JSON.parse(fs.readFileSync(path.join(ROOT, 'package/rhmiData/uiDescriptions/ID8/uiDescription.json'), 'utf8'));
 const comps = uiDesc.containers[1].components;
 const names = Object.keys(comps).map((k) => comps[k].name);
-ok(uiDesc.containers[1].name === 'ST_OnlineApps_SeatLights' && names.indexOf('slStatus') >= 0 && names.indexOf('slSwitch') >= 0, 'screen: state, status, switch');
+ok(uiDesc.containers[1].name === 'ST_OnlineApps_SeatLights' && ['slStatus', 'slSwitch', 'slLogs', 'slOlder', 'slNewer', 'slLine0', 'slLine29'].every((x) => names.indexOf(x) >= 0),
+    'screen: status, switch, Logs, Older, Newer, the log rows');
 
 tests.reduce((p, fn) => p.then(fn), Promise.resolve()).then(() => {
     console.log('ok (' + n + ' checks)');
