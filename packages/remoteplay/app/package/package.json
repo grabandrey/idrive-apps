@@ -1,0 +1,40 @@
+{
+  "name": "ida_remoteplay",
+  "version": "1.0.0",
+  "description": "Play your PlayStation on the car's screen while parked: QR sign-in, pairing, hardware video, touch or USB controls",
+  "private": false,
+  "main": "javascript/runner.js",
+  "oapAppSettings": {
+    "maxDiskUsage": 5242880,
+    "cpuLimit": 40,
+    "memoryThresholdKB": 98304,
+    "priority": "PRIO_MEDIUM",
+    "visibility": "FOREGROUND",
+    "latencyClass": "FOREGROUND",
+    "loggingId": "RMPL",
+    "userLoginRequired": false,
+    "backgroundPriority": 150,
+    "someipManifest": "manifest.json"
+  },
+  "files": [
+    "config",
+    "rhmiData",
+    "package.json",
+    "npm-shrinkwrap.json",
+    "permissions.json",
+    "javascript",
+    "manifest.json",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "oap-sdk": "24.10.2"
+  },
+  "engines": {
+    "node": ">=8.7.0"
+  },
+  "author": "RemotePlay",
+  "license": "MIT",
+  "mguHmi": [
+    "ID8"
+  ]
+}

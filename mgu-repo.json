@@ -37,6 +37,23 @@
       "description": "One switch: keeps the seat (headrest) logos lit, no timer, until you switch it off; off while the car is locked with the engine off (G87 M2: the body controller's lamp output 45). The switch is kept across drives. EXPERIMENTAL.",
       "uninstallable": true,
       "mguHmi": ["ID8"]
+    },
+    {
+      "id": "ida-remoteplay-video",
+      "kind": "tool",
+      "path": "packages/remoteplay/tool",
+      "mguHmi": ["ID8"]
+    },
+    {
+      "id": "ida_remoteplay",
+      "kind": "app",
+      "path": "packages/remoteplay/app",
+      "build": "unit",
+      "title": "Remote Play",
+      "description": "Play your PlayStation on the car's screen while parked: QR sign-in from your phone, find, wake and pair the console, video at full frame rate through the head unit's hardware decoder, touch controls or a USB gamepad. Needs a stream engine (not included yet). EXPERIMENTAL, untested on a car.",
+      "requires": { "ida-remoteplay-video": "1.0.0" },
+      "uninstallable": true,
+      "mguHmi": ["ID8"]
     }
   ]
 }
