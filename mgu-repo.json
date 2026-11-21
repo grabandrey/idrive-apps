@@ -37,6 +37,16 @@
       "description": "One switch: keeps the seat (headrest) logos lit, no timer, until you switch it off; off while the car is locked with the engine off (G87 M2: the body controller's lamp output 45). The switch is kept across drives. EXPERIMENTAL.",
       "uninstallable": true,
       "mguHmi": ["ID8"]
+    },
+    {
+      "id": "ida_drlcolor",
+      "kind": "app",
+      "path": "packages/drlcolor/app",
+      "build": "unit",
+      "title": "DRL Colour",
+      "description": "Switches an aftermarket DRL colour module between yellow and white: flashes the high beams three times through the body controller, after learning once which lamp outputs they are. Optional Auto white at each engine start. Only with the car standing. EXPERIMENTAL, untested on a car.",
+      "uninstallable": true,
+      "mguHmi": ["ID8"]
     }
   ]
 }
