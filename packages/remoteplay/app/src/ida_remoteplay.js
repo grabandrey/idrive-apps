@@ -16,7 +16,7 @@
  * over 3 km/h stops the game and the video at once.
  *
  * The parts (links.js): the video tool (ida-remoteplay-video, root: GStreamer, the gamepad) and the stream engine
- * (its own socket: the console's encrypted session). The screen is drawn by MGU Store's Renderer (gpu.js, ui.js); the
+ * (ida-remoteplay-engine, root: chiaki-ng's library, the console's encrypted session). The screen is drawn by MGU Store's Renderer (gpu.js, ui.js); the
  * plain HMI list underneath has the status, Sign in (the address as text), Find, Wake, Video test and the log.
  * Built on the head unit by MGU Store against the car's own oap-sdk (mgu-app.json).
  */
@@ -355,7 +355,7 @@ class RemotePlayApp extends OnlineApp {
         this._pad.release();
         this._written = {};
         logger.info('play: ' + c.name + ', ' + s.width + 'x' + s.height + ' ' + s.fps + ' fps ' + codec);
-        this._engine.ask({ op: 'start', host: c.host, type: c.type, registered: reg,
+        this._engine.ask({ op: 'start', host: c.host, type: c.type, registered: reg, accountId: this._saved.account && this._saved.account.accountId,
             video: { socket: STREAM_SOCKET, codec: codec, width: s.width, height: s.height, fps: s.fps, bitrateKbps: s.bitrateKbps, rect: this._videoRect() } }, 30000)
             .catch((err) => this._endPlay('could not start: ' + err.message));
     }

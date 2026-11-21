@@ -1,0 +1,16 @@
+[Unit]
+Description=Remote Play Engine: the PlayStation's Remote Play session (pairing, the stream, the controller), built on chiaki-ng
+After=network.target
+
+[Service]
+ExecStart=/bin/sh /var/opt/ida-remoteplay-engine/current/start.sh
+# the car's system.conf has DefaultStandardOutput=null: the log would never reach the journal
+StandardOutput=journal
+# the app's socket: /run/ida-remoteplay-engine/engine.sock (0666, the app runs as its own uid)
+RuntimeDirectory=ida-remoteplay-engine
+RuntimeDirectoryMode=0755
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

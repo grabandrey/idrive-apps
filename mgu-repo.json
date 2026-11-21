@@ -45,13 +45,19 @@
       "mguHmi": ["ID8"]
     },
     {
+      "id": "ida-remoteplay-engine",
+      "kind": "tool",
+      "path": "packages/remoteplay/engine",
+      "mguHmi": ["ID8"]
+    },
+    {
       "id": "ida_remoteplay",
       "kind": "app",
       "path": "packages/remoteplay/app",
       "build": "unit",
       "title": "Remote Play",
-      "description": "Play your PlayStation on the car's screen while parked: QR sign-in from your phone, find, wake and pair the console, video at full frame rate through the head unit's hardware decoder, touch controls or a USB gamepad. Needs a stream engine (not included yet). EXPERIMENTAL, untested on a car.",
-      "requires": { "ida-remoteplay-video": "1.0.0" },
+      "description": "Play your PlayStation on the car's screen while parked: QR sign-in from your phone, find, wake and pair the console, the stream through its own engine (built on chiaki-ng), video at full frame rate through the head unit's hardware decoder, touch controls or a USB gamepad. EXPERIMENTAL, untested on a car.",
+      "requires": { "ida-remoteplay-video": "1.0.0", "ida-remoteplay-engine": "1.0.0" },
       "uninstallable": true,
       "mguHmi": ["ID8"]
     }

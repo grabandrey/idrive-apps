@@ -348,6 +348,53 @@ test('package: modules, requires, Node 8, the manifest, the screen\'s rows', () 
     comp.files.forEach((f) => ok(fs.existsSync(path.join(TOOL, f.from)), 'tool file ' + f.from));
 });
 
+/* ---- the engine (packages/remoteplay/engine) ---- */
+const ENGINE = path.join(ROOT, '..', 'engine');
+test('engine: the component, its programs, the licences', () => {
+    const comp = JSON.parse(fs.readFileSync(path.join(ENGINE, 'component.json'), 'utf8'));
+    eq(comp.id, 'ida-remoteplay-engine');
+    comp.files.forEach((f) => ok(fs.existsSync(path.join(ENGINE, f.from)), 'engine file ' + f.from));
+    comp.units.forEach((u) => ok(fs.existsSync(path.join(ENGINE, u.from)), 'engine unit ' + u.from));
+    // ELF, static, for the right processor (e_machine: 62 x86-64, 183 AArch64), and installed executable
+    [['x86_64', 62], ['aarch64', 183]].forEach(([arch, machine]) => {
+        const rel = 'bin/' + arch + '/ida-rp-engine', b = fs.readFileSync(path.join(ENGINE, rel));
+        ok(b.slice(0, 4).toString('latin1') === '\x7fELF' && b[4] === 2, rel + ' is a 64-bit ELF');
+        eq(b.readUInt16LE(18), machine, rel + ' is for ' + arch);
+        eq(comp.files.filter((f) => f.from === rel)[0].mode, '0755', rel + ' is executable');
+    });
+    ok(/GNU AFFERO GENERAL PUBLIC LICENSE/.test(fs.readFileSync(path.join(ENGINE, 'LICENSE'), 'utf8')), 'the AGPL text');
+    ok(comp.files.some((f) => f.from === 'engine.c') && comp.files.some((f) => f.from === 'build.sh'), 'its source goes with it');
+    const start = fs.readFileSync(path.join(ENGINE, 'start.sh'), 'utf8');
+    ok(/x86_64\|amd64\) ARCH=x86_64/.test(start) && /aarch64\|arm64\) ARCH=aarch64/.test(start), 'start.sh picks the processor');
+});
+test('engine: the real program answers the app (x86_64 here)', () => {
+    if (process.arch !== 'x64' || process.platform !== 'linux') return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-engine-'));
+    const proc = require('child_process').spawn(path.join(ENGINE, 'bin/x86_64/ida-rp-engine'), [dir], { stdio: 'ignore' });
+    const sock = path.join(dir, 'engine.sock');
+    const until = (cond, ms) => new Promise((resolve, reject) => {
+        const t0 = Date.now();
+        const tick = () => (cond() ? resolve() : Date.now() - t0 > ms ? reject(new Error('timed out')) : setTimeout(tick, 50));
+        tick();
+    });
+    const l = new links.JsonLink('stream engine', sock, log, { retryMs: 50, timeoutMs: 20000 });
+    const events = [];
+    l.on('session', (m) => events.push(m.state));
+    return until(() => links.isSocket(sock), 5000)
+        .then(() => { l.connect(); return until(() => l.ready, 5000); })
+        .then(() => l.ask({ op: 'hello', proto: 1 }))
+        .then((h) => {
+            ok(/chiaki-ng/.test(h.name) && h.targets.indexOf('ps5') >= 0, 'hello');
+            return l.ask({ op: 'register', host: '127.0.0.1', type: 'PS5', accountId: 'AQAAAAAAAAA=', pin: '1234' }).then(() => ok(false, 'a short pin'), (e) => ok(/8-digit/.test(e.message), 'a short pin is refused'));
+        })
+        .then(() => l.ask({ op: 'register', host: '127.0.0.1', type: 'PS5', accountId: 'AQAAAAAAAAA=', pin: '12345678' }).then(() => ok(false, 'no console here'), (e) => ok(/refused the pairing/.test(e.message), 'no console: refused')))
+        .then(() => l.ask({ op: 'start', host: '127.0.0.1', type: 'PS5', registered: { rpRegistKey: 'AAAAAAAAAAAAAAAAAAAAAA==', rpKey: 'AAAAAAAAAAAAAAAAAAAAAA==' },
+            video: { socket: path.join(dir, 'none.sock'), codec: 'h264', width: 1280, height: 720, fps: 60 } }))
+        .then(() => until(() => events.indexOf('ended') >= 0, 15000))
+        .then(() => { eq(events[0], 'connecting'); l.tell({ op: 'input', state: { buttons: ['cross'] } }); return l.ask({ op: 'stop' }); })
+        .then(() => { l.close(); proc.kill(); }, (e) => { l.close(); proc.kill(); throw e; });
+});
+
 /* run them in order */
 tests.reduce((p, t) => p.then(() => Promise.resolve().then(t[1]).catch((e) => { e.message = t[0] + ': ' + e.message; throw e; })), Promise.resolve())
     .then(() => { console.log(n + ' checks passed'); process.exit(0); },
