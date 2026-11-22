@@ -25,22 +25,35 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { Gamepads } = require('./gamepad.js');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const RUN = process.env.RPV_RUN || '/run/ida-remoteplay-video';
 const CTL = path.join(RUN, 'ctl.sock');
 const STREAM = path.join(RUN, 'stream.sock');
 const DATA = process.env.RPV_DATA || '/var/opt/ida-remoteplay-video';
 const SETTINGS = path.join(DATA, 'settings.json');
 
-/* decoders by codec, hardware first; the last of each is software (works everywhere, rarely at 60 fps) */
+/* well-known decoder names, hardware first; the head unit's own may have any name, so decoders are also found by what
+ * GStreamer says they are (klass "Codec/Decoder/Video[/Hardware]") and the codec in their name */
 const DECODERS = {
-    h264: ['v4l2h264dec', 'v4l2slh264dec', 'omxh264dec', 'vaapih264dec', 'nvv4l2decoder', 'imxvpudec_h264', 'vpudec', 'mfxh264dec', 'avdec_h264'],
-    h265: ['v4l2h265dec', 'v4l2slh265dec', 'omxh265dec', 'vaapih265dec', 'nvv4l2decoder', 'imxvpudec_h265', 'vpudec', 'mfxh265dec', 'avdec_h265'],
+    h264: ['v4l2h264dec', 'v4l2slh264dec', 'omxh264dec', 'vaapih264dec', 'vah264dec', 'msdkh264dec', 'qsvh264dec', 'nvh264dec', 'nvv4l2decoder',
+        'imxvpudec_h264', 'mfxh264dec', 'vulkanh264dec', 'avdec_h264', 'openh264dec'],
+    h265: ['v4l2h265dec', 'v4l2slh265dec', 'omxh265dec', 'vaapih265dec', 'vah265dec', 'msdkh265dec', 'qsvh265dec', 'nvh265dec', 'nvv4l2decoder',
+        'imxvpudec_h265', 'mfxh265dec', 'vulkanh265dec', 'avdec_h265', 'libde265dec'],
 };
-const SOFTWARE = ['avdec_h264', 'avdec_h265'];
+/* decoders that take any of several codecs: a head unit's vendor plugin is often one of these */
+const GENERIC = ['vaapidecode', 'imxvpudec', 'vpudec', 'mfxdecode', 'omxdec', 'qtivdec', 'qcvideodec', 'nvv4l2decoder', 'v4l2video0dec'];
+const SOFTWARE = /^(avdec_|openh264dec|libde265dec|ffdec_|dav1d)/;
+const CODEC = { h264: /264|avc/i, h265: /265|hevc/i };
 const PARSERS = { h264: 'h264parse', h265: 'h265parse' };
-const ENCODERS = ['v4l2h264enc', 'omxh264enc', 'vaapih264enc', 'imxvpuenc_h264', 'vpuenc_h264', 'x264enc', 'openh264enc'];
+const ENCODERS = ['v4l2h264enc', 'omxh264enc', 'vaapih264enc', 'vah264enc', 'msdkh264enc', 'qsvh264enc', 'imxvpuenc_h264', 'vpuenc_h264', 'x264enc', 'openh264enc'];
 const SINKS = ['waylandsink', 'glimagesink', 'kmssink', 'ximagesink', 'fbdevsink', 'autovideosink'];
+/* the launcher shipped with the tool (ida-gst.c): the head unit's GStreamer libraries, without gst-launch-1.0 */
+const ARCH = { x64: 'x86_64', arm64: 'aarch64' }[process.arch] || process.arch;
+const LAUNCHER = process.env.RPV_LAUNCHER || path.join(__dirname, 'bin', ARCH, 'ida-gst');
+/* short clips (make_samples.py): each decoder is checked on one before it's used; the video test decodes the 720p one */
+const SAMPLES = { h264: path.join(__dirname, 'samples', 'check.h264'), h265: path.join(__dirname, 'samples', 'check.h265'),
+    test: path.join(__dirname, 'samples', 'test720p60.h264'), testFrames: 480 };
+const CHECK_MS = 15000;
 
 function log(level, text) { process.stdout.write('[' + level + '] ' + text + '\n'); }
 
@@ -67,29 +80,83 @@ function displayEnv() {
     return env;
 }
 
-/* gst-inspect-1.0 with no arguments: "plugin:  element: description" lines -> the element names */
+/* gst-inspect-1.0 with no arguments: "plugin:  element: description" lines -> { name: { rank: 0, klass: '' } } */
 function parseInspect(text) {
     const out = {};
-    String(text).split('\n').forEach((l) => { const m = /^\s*[\w.-]+:\s+([\w.-]+):\s/.exec(l); if (m) out[m[1]] = true; });
+    String(text).split('\n').forEach((l) => { const m = /^\s*[\w.-]+:\s+([\w.-]+):\s/.exec(l); if (m) out[m[1]] = { rank: 0, klass: '' }; });
+    return out;
+}
+/* ida-gst probe: "version x.y.z", then "element<TAB>name<TAB>rank<TAB>klass" -> { version, elements } */
+function parseProbe(text) {
+    const out = { version: null, elements: {} };
+    String(text).split('\n').forEach((l) => {
+        const v = /^version (\S+)/.exec(l);
+        if (v) out.version = v[1];
+        const f = l.split('\t');
+        if (f[0] === 'element' && f[1]) out.elements[f[1]] = { rank: Number(f[2]) || 0, klass: f[3] || '' };
+    });
     return out;
 }
 
-/* what to use, from what is installed and the settings */
+/* the decoders for a codec, best first: hardware, then GStreamer's rank, then the well-known order */
+function decodersFor(elements, codec) {
+    const names = Object.keys(elements).filter((n) => {
+        const k = elements[n].klass;
+        if (/parse|pay|enc|mux|sink|src$/i.test(n) && !/dec/i.test(n)) return false;
+        if (k) {
+            if (!/decoder/i.test(k) || !/video/i.test(k)) return false;
+            return CODEC[codec].test(n) || GENERIC.indexOf(n) >= 0;
+        }
+        return DECODERS[codec].indexOf(n) >= 0 || GENERIC.indexOf(n) >= 0;
+    });
+    const hw = (n) => (/hardware/i.test(elements[n].klass) || !SOFTWARE.test(n) ? 1 : 0);
+    const known = (n) => { const i = DECODERS[codec].indexOf(n); return i < 0 ? 99 : i; };
+    return names.sort((a, b) => hw(b) - hw(a) || elements[b].rank - elements[a].rank || known(a) - known(b));
+}
+
+/* what to use, from what is installed (gst-inspect names, or ida-gst's names with their klass) and the settings */
 function choose(elements, settings) {
     settings = settings || {};
-    const pick = (list, forced) => (forced && elements[forced] ? forced : list.filter((e) => elements[e])[0] || null);
-    const dec = { h264: pick(DECODERS.h264, settings.decoder && settings.decoder.h264), h265: pick(DECODERS.h265, settings.decoder && settings.decoder.h265) };
-    const sink = pick(SINKS, settings.sink);
+    // a plain list of names (older callers, tests): no klass known
+    if (Array.isArray(elements) || Object.keys(elements).some((k) => elements[k] === true)) {
+        const o = {};
+        Object.keys(elements).forEach((k) => { o[k] = { rank: 0, klass: '' }; });
+        elements = o;
+    }
+    const has = (n) => !!elements[n];
+    const forced = (n) => (n && has(n) ? n : null);
+    const dec = {}, all = {};
+    ['h264', 'h265'].forEach((codec) => {
+        all[codec] = decodersFor(elements, codec);
+        dec[codec] = forced(settings.decoder && settings.decoder[codec]) || all[codec][0] || null;
+    });
+    // nothing by name: decodebin picks whatever the head unit has registered for the codec (its player does the same)
+    const auto = !dec.h264 && has('decodebin');
+    if (auto) dec.h264 = 'decodebin';
+    const isHw = (n) => !!n && n !== 'decodebin' && (/hardware/i.test((elements[n] || {}).klass) || !SOFTWARE.test(n));
+    const sinks = SINKS.filter(has).concat(Object.keys(elements).filter((n) => /sink/i.test(elements[n].klass) && /video/i.test(elements[n].klass) && SINKS.indexOf(n) < 0)
+        .sort((a, b) => elements[b].rank - elements[a].rank));
+    const encs = ENCODERS.filter(has);
     return {
         decoders: dec,
         decoder: dec.h264 || dec.h265,
-        hardware: !!(dec.h264 && SOFTWARE.indexOf(dec.h264) < 0),
-        hardwareH265: !!(dec.h265 && SOFTWARE.indexOf(dec.h265) < 0),
-        encoder: pick(ENCODERS, settings.encoder),
-        sink: sink,
+        auto: auto,
+        hardware: isHw(dec.h264),
+        hardwareH265: isHw(dec.h265),
+        candidates: { h264: all.h264.slice(0, 8), h265: all.h265.slice(0, 8) },
+        encoder: forced(settings.encoder) || encs.filter((n) => !SOFTWARE.test(n))[0] || encs[0] || null,
+        sink: forced(settings.sink) || sinks[0] || null,
         sinkProps: settings.sinkProps || '',
-        converter: elements.videoconvert ? 'videoconvert' : null,
+        converter: has('videoconvert') ? 'videoconvert' : null,
     };
+}
+
+/* why there's nothing to play with, in words for the screen */
+function whyNot(p) {
+    if (!p.gst) return p.error || 'GStreamer is not on this head unit';
+    if (!p.decoder) return 'GStreamer ' + p.gst + ' has no H.264 decoder (' + p.elements + ' elements; see probe.txt)';
+    if (!p.sink) return 'GStreamer ' + p.gst + ' has no video display element';
+    return null;
 }
 
 /* the display element and its settings (no measuring element in between: fpsdisplaysink can't pass a sink its own
@@ -104,18 +171,20 @@ function sinkPart(c, rect) {
 function streamPipeline(c, codec, rect) {
     const dec = c.decoders[codec];
     if (!dec) return null;
-    const conv = SOFTWARE.indexOf(dec) >= 0 && c.converter ? ' ! ' + c.converter : '';
+    const conv = (SOFTWARE.test(dec) || dec === 'decodebin') && c.converter ? ' ! ' + c.converter : '';
     return 'fdsrc fd=0 ! ' + PARSERS[codec] + ' ! ' + dec + conv + ' ! ' + sinkPart(c, rect);
 }
-/* the test: a moving picture, encoded and decoded the way a stream is when there is an encoder, else shown directly.
- * The source is live at the asked rate; when decoding or the display can't keep up it is held back, so frames over the
- * time from PLAYING to the end is the rate the car really shows. */
+/* the test: the 720p, 60 fps clip decoded and shown as fast as the head unit can (sync=false), through the decoder the
+ * stream will use: frames over the time from PLAYING to the end is the rate the car can really show (it may be over 60).
+ * With no working decoder, a moving picture shown directly (the display alone). */
 function testPipeline(c, o) {
+    const conv = c.converter ? ' ! ' + c.converter : '';
+    if (c.decoders.h264 && o.sample) {
+        return 'filesrc location=' + o.sample + ' ! h264parse ! ' + c.decoders.h264 + conv + ' ! ' + sinkPart(c, o.rect);
+    }
     const src = 'videotestsrc is-live=true pattern=ball num-buffers=' + Math.round(o.fps * o.seconds) +
         ' ! video/x-raw,width=' + o.width + ',height=' + o.height + ',framerate=' + o.fps + '/1';
-    const through = c.encoder && c.decoders.h264 ? ' ! ' + c.encoder + ' ! h264parse ! ' + c.decoders.h264 : '';
-    const conv = c.converter ? ' ! ' + c.converter : '';
-    return src + through + conv + ' ! ' + sinkPart(c, o.rect);
+    return src + conv + ' ! ' + sinkPart(c, o.rect);
 }
 
 /* gst-launch-1.0's arguments: one word each (no value here has a space) */
@@ -146,7 +215,7 @@ class FrameCounter {
 class VideoTool {
     constructor() {
         this.clients = new Set();
-        this.gst = { launch: which('gst-launch-1.0'), inspect: which('gst-inspect-1.0'), version: null };
+        this.gst = { launch: which('gst-launch-1.0'), inspect: which('gst-inspect-1.0'), launcher: null, version: null };
         this.probe = null;
         this.proc = null;          // the running pipeline
         this.what = null;          // 'test' | 'stream'
@@ -165,25 +234,105 @@ class VideoTool {
         return this._probe();
     }
 
+    /* what GStreamer has: through the shipped launcher (the head unit's libraries, no tools needed), else gst-inspect-1.0 */
     _probe() {
-        if (!this.gst.launch || !this.gst.inspect) {
-            this.probe = { gst: null, error: 'GStreamer (gst-launch-1.0) is not on this head unit' };
-            log('warn', this.probe.error);
-            return Promise.resolve(this.probe);
-        }
+        return this._probeLauncher().then((r) => r || this._probeInspect()).then((r) => {
+            const base = { devices: this._devices(), display: displayEnv().WAYLAND_DISPLAY || null };
+            if (!r.elements) {
+                this.probe = Object.assign(base, { gst: null, error: r.error || 'GStreamer is not on this head unit (no libgstreamer-1.0, no gst-launch-1.0)' });
+            } else {
+                const c = choose(r.elements, readSettings());
+                this.probe = Object.assign(base, { gst: r.version || 'unknown', via: r.via, elements: Object.keys(r.elements).length }, c);
+            }
+            return this.probe.gst ? this._verify(this.probe, r.elements, readSettings()) : this.probe;
+        }).then(() => {
+            this.probe.why = whyNot(this.probe);
+            log(this.probe.why ? 'warn' : 'info', 'probe: ' + JSON.stringify(this.probe));
+            this._report(this._elements || {});
+            return this.probe;
+        });
+    }
+
+    /* a decoder GStreamer lists may still not work here (no such hardware, no driver): each candidate decodes the
+     * check clip, best first, and the first that gets to the end is used. A decoder named in settings.json is tried first. */
+    _verify(p, elements, settings) {
+        this._elements = elements;
+        p.tried = {};
+        const isHw = (n) => n !== 'decodebin' && (/hardware/i.test((elements[n] || {}).klass) || !SOFTWARE.test(n));
+        const pickFor = (codec) => {
+            const forced = settings.decoder && settings.decoder[codec];
+            const list = (forced && elements[forced] ? [forced] : []).concat(p.candidates[codec].filter((n) => n !== forced));
+            if (elements.decodebin) list.push('decodebin');
+            p.tried[codec] = [];
+            const next = (k) => {
+                if (k >= list.length) return Promise.resolve(null);
+                return this._check(list[k], codec).then((err) => {
+                    p.tried[codec].push(list[k] + (err ? ': ' + err : ': works'));
+                    return err ? next(k + 1) : list[k];
+                });
+            };
+            return fileExists(SAMPLES[codec]) ? next(0) : Promise.resolve(p.decoders[codec]);
+        };
+        return pickFor('h264').then((d264) => pickFor('h265').then((d265) => {
+            p.decoders = { h264: d264, h265: d265 };
+            p.decoder = d264 || d265;
+            p.auto = d264 === 'decodebin';
+            p.hardware = !!d264 && isHw(d264);
+            p.hardwareH265 = !!d265 && isHw(d265);
+            log('info', 'decoders checked: ' + JSON.stringify(p.tried));
+            return p;
+        }));
+    }
+
+    /* the check clip through one decoder: null when it decodes to the end, else why not */
+    _check(dec, codec) {
+        const conv = this.probe && this.probe.converter && (SOFTWARE.test(dec) || dec === 'decodebin') ? ' ! videoconvert' : '';
+        const pl = 'filesrc location=' + SAMPLES[codec] + ' ! ' + PARSERS[codec] + ' ! ' + dec + conv + ' ! fakesink sync=false';
+        const cmd = this.gst.launcher || this.gst.launch;
+        const argv = this.gst.launcher ? ['launch'].concat(args(pl)) : ['-e'].concat(args(pl));
         return new Promise((resolve) => {
-            execFile(this.gst.inspect, [], { maxBuffer: 8 * 1024 * 1024, env: displayEnv() }, (err, out) => {
-                const elements = parseInspect(out || '');
+            execFile(cmd, argv, { timeout: CHECK_MS, env: displayEnv(), maxBuffer: 1024 * 1024 }, (err, out, errOut) => {
+                if (!err) { resolve(null); return; }
+                const m = /ERROR:?\s*(.*)/.exec(String(out) + '\n' + String(errOut));
+                resolve(err.killed ? 'no end within ' + CHECK_MS / 1000 + ' s' : (m ? m[1] : 'exit ' + err.code).slice(0, 160));
+            });
+        });
+    }
+
+    _probeLauncher() {
+        return new Promise((resolve) => {
+            try { fs.accessSync(LAUNCHER, fs.constants.X_OK); } catch (e) { resolve(null); return; }
+            execFile(LAUNCHER, ['probe'], { maxBuffer: 16 * 1024 * 1024, timeout: 30000, env: displayEnv() }, (err, out) => {
+                const p = parseProbe(out || '');
+                if (p.version && Object.keys(p.elements).length) { this.gst.launcher = LAUNCHER; resolve({ version: p.version, elements: p.elements, via: 'ida-gst' }); return; }
+                const why = /ERROR: (.*)/.exec(out || '');
+                log('warn', 'ida-gst probe: ' + (why ? why[1] : err ? err.message : 'nothing'));
+                resolve(why ? { error: why[1] } : null);
+            });
+        });
+    }
+
+    _probeInspect() {
+        if (!this.gst.launch || !this.gst.inspect) return Promise.resolve({});
+        return new Promise((resolve) => {
+            execFile(this.gst.inspect, [], { maxBuffer: 16 * 1024 * 1024, timeout: 30000, env: displayEnv() }, (err, out) => {
                 execFile(this.gst.inspect, ['--version'], (e2, ver) => {
                     const v = /GStreamer\s+([\d.]+)/.exec(ver || '');
-                    const c = choose(elements, readSettings());
-                    this.probe = Object.assign({ gst: v ? v[1] : 'unknown', elements: Object.keys(elements).length,
-                        devices: this._devices(), display: displayEnv().WAYLAND_DISPLAY || null }, c);
-                    log('info', 'probe: ' + JSON.stringify(this.probe));
-                    resolve(this.probe);
+                    resolve({ version: v ? v[1] : null, elements: parseInspect(out || ''), via: 'gst-inspect-1.0' });
                 });
             });
         });
+    }
+
+    /* probe.txt: the video elements found, to read or send when nothing works */
+    _report(r) {
+        try {
+            const els = r.elements || {};
+            const lines = Object.keys(els).filter((n) => /video|264|265|hevc|avc|dec|sink/i.test(n + ' ' + els[n].klass)).sort()
+                .map((n) => n + '\t' + els[n].rank + '\t' + els[n].klass);
+            fs.mkdirSync(DATA, { recursive: true });
+            fs.writeFileSync(path.join(DATA, 'probe.txt'), JSON.stringify(this.probe, null, 1) + '\n\n' + lines.join('\n') + '\n');
+        } catch (e) { /* only a report */ }
     }
 
     /* the decoder and display devices there are (a hint when nothing is found) */
@@ -225,12 +374,16 @@ class VideoTool {
         if (m.op === 'status') return Promise.resolve({ running: this.what, stats: this.stats });
         if (m.op === 'test') {
             const p = this.probe;
-            if (!p || !p.gst) return Promise.reject(new Error(p && p.error || 'not probed'));
-            if (!p.sink) return Promise.reject(new Error('no video display element on this head unit'));
+            if (!p || !p.gst || !p.sink) return Promise.reject(new Error(p ? p.why : 'not probed'));
             const o = { width: clamp(m.width, 320, 3840, 1280), height: clamp(m.height, 240, 2160, 720), fps: clamp(m.fps, 10, 120, 60),
                 seconds: clamp(m.seconds, 2, 30, 8), rect: m.rect };
-            this._run('test', testPipeline(p, o), { fps: o.fps, frames: Math.round(o.fps * o.seconds) });
-            return Promise.resolve({ pipeline: testPipeline(p, o), throughDecoder: !!(p.encoder && p.decoders.h264) });
+            const sample = p.decoders.h264 && fileExists(SAMPLES.test) ? SAMPLES.test : null;
+            o.sample = sample;
+            const proc = this._run('test', testPipeline(p, o), { fps: o.fps, frames: sample ? SAMPLES.testFrames : Math.round(o.fps * o.seconds) });
+            // a test that never ends (a decoder or display that stalls) is stopped, so the next one can run
+            const dog = setTimeout(() => { if (this.proc === proc) { log('warn', 'test: no end after ' + (o.seconds * 3 + 15) + ' s, stopping it'); this._stop('stalled'); } }, (o.seconds * 3 + 15) * 1000);
+            proc.on('exit', () => clearTimeout(dog));
+            return Promise.resolve({ pipeline: testPipeline(p, o), throughDecoder: !!sample });
         }
         return Promise.reject(new Error('unknown op ' + m.op));
     }
@@ -239,8 +392,10 @@ class VideoTool {
      * end; a stream's pictures counted on the way in (FrameCounter), reported every second */
     _run(what, pipeline, o) {
         this._stop('replaced');
-        log('info', what + ': gst-launch-1.0 ' + pipeline);
-        const proc = spawn(this.gst.launch, ['-e'].concat(args(pipeline)), { env: displayEnv(), stdio: [o.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+        log('info', what + ': ' + (this.gst.launcher ? 'ida-gst launch ' : 'gst-launch-1.0 ') + pipeline);
+        const cmd = this.gst.launcher || this.gst.launch;
+        const argv = this.gst.launcher ? ['launch'].concat(args(pipeline)) : ['-e'].concat(args(pipeline));
+        const proc = spawn(cmd, argv, { env: displayEnv(), stdio: [o.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
         this.proc = proc; this.what = what;
         const st = this.stats = { what: what, target: o.fps, frames: o.frames || 0, fps: null, playingAt: 0, started: Date.now() };
         let tail = '';
@@ -311,6 +466,8 @@ class VideoTool {
     }
 }
 
+function fileExists(p) { try { return fs.statSync(p).isFile(); } catch (e) { return false; } }
+
 function clamp(v, lo, hi, def) { v = Number(v); return isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : def; }
 
 if (require.main === module) {
@@ -318,4 +475,4 @@ if (require.main === module) {
     new VideoTool().start();
 }
 
-module.exports = { VideoTool, FrameCounter, parseInspect, choose, streamPipeline, testPipeline, args, DECODERS, SINKS };
+module.exports = { VideoTool, FrameCounter, parseInspect, parseProbe, decodersFor, choose, whyNot, streamPipeline, testPipeline, args, DECODERS, SINKS, LAUNCHER, SAMPLES };

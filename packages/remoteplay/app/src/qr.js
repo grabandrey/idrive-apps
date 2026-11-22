@@ -1,7 +1,7 @@
 'use strict';
 /*
  * Remote Play: a QR code for the sign-in page's address, drawn on the car's screen so a phone can open it.
- * Byte mode, error correction level M, versions 1 to 10 (up to 213 bytes: a local address with a token fits in 2-4).
+ * Byte mode, error correction level M, versions 1 to 20 (up to 666 bytes: Sony's sign-in address, about 590, fits in 19).
  *
  *   const q = qr.encode('http://192.168.2.1:8890/s/abcd');   // { size, get(x, y) -> true for dark }
  *
@@ -11,10 +11,14 @@
 /* version -> [ec codewords per block, [blocks, data codewords]...] at level M */
 const BLOCKS_M = [null,
     [10, [1, 16]], [16, [1, 28]], [26, [1, 44]], [18, [2, 32]], [24, [2, 43]],
-    [16, [4, 27]], [18, [4, 31]], [22, [2, 38], [2, 39]], [22, [3, 36], [2, 37]], [26, [4, 43], [1, 44]]];
-const ALIGN = [null, [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
+    [16, [4, 27]], [18, [4, 31]], [22, [2, 38], [2, 39]], [22, [3, 36], [2, 37]], [26, [4, 43], [1, 44]],
+    [30, [1, 50], [4, 51]], [22, [6, 36], [2, 37]], [22, [8, 37], [1, 38]], [24, [4, 40], [5, 41]], [24, [5, 41], [5, 42]],
+    [28, [7, 45], [3, 46]], [28, [10, 46], [1, 47]], [26, [9, 43], [4, 44]], [26, [3, 44], [11, 45]], [26, [3, 41], [13, 42]]];
+const ALIGN = [null, [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50],
+    [6, 30, 54], [6, 32, 58], [6, 34, 62], [6, 26, 46, 66], [6, 26, 48, 70], [6, 26, 50, 74], [6, 30, 54, 78], [6, 30, 56, 82],
+    [6, 30, 58, 86], [6, 34, 62, 90]];
 const EC_M_BITS = 0;              // the format's two error correction bits: L 01, M 00, Q 11, H 10
-const MAX_VERSION = 10;
+const MAX_VERSION = 20;
 
 /* ---- GF(256), polynomial 0x11d ---- */
 const EXP = new Uint8Array(512), LOG = new Uint8Array(256);

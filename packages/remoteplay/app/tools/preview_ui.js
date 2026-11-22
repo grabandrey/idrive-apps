@@ -1,6 +1,6 @@
 'use strict';
 /*
- * node packages/remoteplay/app/tools/preview_ui.js [out.html] [home|away|signin|pin|play|logs]: the app's drawn screen
+ * node packages/remoteplay/app/tools/preview_ui.js [out.html] [home|away|signin|code|pin|play|logs]: the app's drawn screen
  * (src/ui.js), played back onto a browser canvas the way the renderer draws its ops (Light Logger's player). Open it
  * in a browser. The Play screen's middle is transparent on the car (the video tool's picture shows there); here a
  * placeholder stands in for it.
@@ -32,7 +32,8 @@ const models = {
     home: Object.assign({ view: 'home' }, ready),
     away: Object.assign({ view: 'home' }, ready, { console: { name: 'PS5-Living room', host: '192.168.43.20', state: 'gone', type: 'PS5' },
         route: 'internet', remote: { name: 'PS5-Living room', consoleId: 'ab', type: 'PS5', remotePlay: true } }),
-    signin: { view: 'signin', url: url, qr: qr.encode(url) },
+    signin: { view: 'signin', url: url, qr: qr.encode(require('../src/login.js').loginUrl('0000000700410080' + '5e'.repeat(16))) },
+    code: { view: 'code', code: 'v3.Hq7', shift: true },
     pin: Object.assign({ view: 'pin', pin: '483' }, ready),
     play: { view: 'play', session: { state: 'streaming' }, input: { buttons: ['cross'], lx: 12000, ly: -8000, rx: 0, ry: 0 } },
     logs: { view: 'logs', logs: sampleLogs, logPage: 0 },

@@ -2,8 +2,9 @@
 /*
  * Remote Play: play your PlayStation on the car's screen, parked. An iDrive 8 app:
  *
- *   Sign in      a QR code for a page on the car's hotspot: sign in at PlayStation on the phone (login.js); the car
- *                keeps the account id the console asks for when pairing
+ *   Sign in      a QR code for Sony's own sign-in page, so the phone can be on any network; the code Sony's last page
+ *                carries is typed on the car (the code screen) and swapped at Sony by the car (login.js). The page on
+ *                the car's hotspot still works too. The car keeps the account id and a PSN refresh token
  *   Find, Wake   the console on the car's network (discovery.js): the car's hotspot, or the phone's with the car on it;
  *                and, signed in, the account's consoles through PSN, for play over the internet when the console is home
  *   Pair         the console's 8-digit PIN (Settings > System > Remote Play > Pair Device), through the stream engine
@@ -32,7 +33,7 @@ const { Gpu } = require('./gpu.js');
 const ui = require('./ui.js');
 const qr = require('./qr.js');
 const { Pad, layout } = require('./pad.js');
-const { SignIn, refresh } = require('./login.js');
+const { SignIn, refresh, exchange, loginUrl, codeFrom } = require('./login.js');
 const { Discovery } = require('./discovery.js');
 const { JsonLink, VIDEO_SOCKET, ENGINE_SOCKET, STREAM_SOCKET } = require('./links.js');
 const { LogRing } = require('./log_ring.js');
@@ -116,13 +117,10 @@ class RemotePlayApp extends OnlineApp {
 
         this._access = null;                           // { token, expiresAt }: in memory only
         this._signIn = new SignIn({ log: logger, duid: () => this._saved.duid });
-        this._signIn.on('account', (acc) => {
-            this._saved.account = { accountId: acc.accountId, onlineId: acc.onlineId, refreshToken: acc.refreshToken || null, duid: acc.duid || null };
-            this._access = acc.accessToken ? { token: acc.accessToken, expiresAt: acc.expiresAt } : null;
-            this._save();
-            this._note = null; this._dirty = true;
-            if (this._canInternet()) this._findRemote(false);
-        });
+        this._signIn.on('account', (acc) => this._onAccount(acc));
+        this._code = '';                               // the code screen: what's typed, Shift, signing in
+        this._shift = false;
+        this._signing = false;
         this._discovery = new Discovery({ log: logger });
         this._videoLink = new JsonLink('video tool', VIDEO_SOCKET, logger);
         this._engine = new JsonLink('stream engine', ENGINE_SOCKET, logger);
@@ -172,7 +170,9 @@ class RemotePlayApp extends OnlineApp {
             this._video.tool = true;
             v.ask({ op: 'probe' }).then((p) => {
                 this._video.probe = p;
-                logger.info('video: ' + (p.gst ? 'GStreamer ' + p.gst + ', decoder ' + (p.decoder || 'none') + (p.hardware ? ' (hardware)' : '') + ', display ' + (p.sink || 'none') : p.error));
+                logger.info('video: ' + (p.gst ? 'GStreamer ' + p.gst + ' (' + p.via + '), decoder ' + (p.decoder || 'none') + (p.hardware ? ' (hardware)' : '') + ', display ' + (p.sink || 'none') : p.error));
+                if (p.tried) Object.keys(p.tried).forEach((codec) => logger.info('video: ' + codec + ' decoders tried: ' + (p.tried[codec].join('; ') || 'none')));
+                if (p.why) logger.warn('video: ' + p.why);
                 this._dirty = true;
             }, (err) => logger.warn('video probe: ' + err.message));
         });
@@ -251,6 +251,8 @@ class RemotePlayApp extends OnlineApp {
         this._pressedAt = this._pressedAt || {};
         if (now - (this._pressedAt[name] || 0) < 400) return;        // the same press by both paths
         this._pressedAt[name] = now;
+        if (this._view === 'code' && /^rpK/.test(name)) { this._key(name); this._dirty = true; this._render(); return; }
+        if (name === 'rpCode') { this._view = 'code'; this._code = ''; this._shift = false; this._note = null; this._warn = false; this._dirty = true; this._render(); return; }
         const keypad = /^rpK(\d)$/.exec(name);
         if (keypad && this._view === 'pin') { if (this._pin.length < 8) this._pin += keypad[1]; }
         else if (name === 'rpKDel' && this._view === 'pin') this._pin = this._pin.slice(0, -1);
@@ -271,6 +273,7 @@ class RemotePlayApp extends OnlineApp {
     }
 
     _close() {
+        if (this._view === 'code') { if (!this._signing) { this._view = 'signin'; this._note = null; this._warn = false; } return; }
         if (this._view === 'signin') this._signIn.stop();
         if (this._view === 'pin' && this._pairing) return;
         this._view = 'home';
@@ -278,16 +281,62 @@ class RemotePlayApp extends OnlineApp {
         this._written = {};
     }
 
+    _onAccount(acc) {
+        this._saved.account = { accountId: acc.accountId, onlineId: acc.onlineId, refreshToken: acc.refreshToken || null, duid: acc.duid || null };
+        this._access = acc.accessToken ? { token: acc.accessToken, expiresAt: acc.expiresAt } : null;
+        this._save();
+        this._note = null; this._warn = false; this._dirty = true;
+        if (this._canInternet()) this._findRemote(false);
+    }
+
+    /* the QR code: Sony's sign-in page, with this car's PSN device id (made by the engine once) so the token is good for
+     * play over the internet; the page on the car's hotspot is offered as text beside it */
     _openSignIn() {
         this._view = 'signin';
-        this._signIn.start().then((url) => {
-            this._signUrl = url;
-            this._qr = null;
-            try { if (url) this._qr = qr.encode(url); } catch (e) { logger.warn('QR: ' + e.message); }
-            if (!url) { this._note = 'The car has no network address: switch on its Wi-Fi hotspot.'; this._warn = true; }
-            else logger.info('sign-in page: ' + url.replace(/\/s\/.*/, '/s/...'));
+        this._note = null; this._warn = false;
+        this._qr = null;
+        const duid = this._saved.duid ? Promise.resolve() : this._engine.ready
+            ? this._engine.ask({ op: 'duid' }).then((d) => { this._saved.duid = d.duid; this._save(); }, (err) => logger.warn('PSN device id: ' + err.message))
+            : Promise.resolve();
+        duid.then(() => {
+            try { this._qr = qr.encode(loginUrl(this._saved.duid)); } catch (e) { logger.warn('QR: ' + e.message); }
+            if (!this._saved.duid) { this._note = 'The stream engine isn\'t running: this sign-in will be good for play at home only.'; this._warn = true; }
             this._dirty = true;
         });
+        this._signIn.start().then((url) => { this._signUrl = url; this._dirty = true; });
+    }
+
+    /* the code screen's keys */
+    _key(name) {
+        if (this._signing) return;
+        const ch = /^rpKc_(.)$/.exec(name);
+        if (ch && this._code.length < 200) this._code += ch[1];
+        else if (name === 'rpKShift') this._shift = !this._shift;
+        else if (name === 'rpKDel') this._code = this._code.slice(0, -1);
+        else if (name === 'rpKClear') this._code = '';
+        else if (name === 'rpKSend') this._sendCode();
+    }
+
+    /* the typed code (or a whole address someone typed) swapped at Sony by the car */
+    _sendCode() {
+        const code = codeFrom(this._code.indexOf('code=') >= 0 ? '?' + this._code.slice(this._code.indexOf('code=')) : this._code);
+        if (!code) { this._note = 'That doesn\'t look like the code: type what comes after code= in the address.'; this._warn = true; return; }
+        this._signing = true;
+        this._note = 'Signing in at Sony...'; this._warn = false;
+        const duid = this._saved.duid;
+        exchange(code).then((acc) => {
+            acc.duid = acc.refreshToken ? duid : null;
+            logger.info('signed in' + (acc.onlineId ? ' as ' + acc.onlineId : '') + ' with the typed code');
+            this._code = '';
+            this._view = 'signin';
+            this._onAccount(acc);
+        }, (err) => {
+            logger.warn('sign-in with the typed code failed: ' + err.message);
+            this._note = /ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket|network/i.test(err.message)
+                ? 'The car can\'t reach Sony: is it online (its own connection, or a phone\'s hotspot)?'
+                : err.message + ' Codes work once and expire within minutes: sign in on the phone again for a new one.';
+            this._warn = true;
+        }).then(() => { this._signing = false; this._dirty = true; });
     }
 
     /* signed in with a PSN token made for this car's device id: play over the internet is possible */
@@ -405,9 +454,9 @@ class RemotePlayApp extends OnlineApp {
         this._video.testing = true;
         this._video.size = s.width + 'x' + s.height;
         this._video.target = s.fps;
-        this._note = 'Video test: a moving picture for 8 seconds, ' + s.width + 'x' + s.height + ' at ' + s.fps + ' fps.'; this._warn = false;
+        this._note = 'Video test: a 720p clip decoded and shown as fast as the head unit can.'; this._warn = false;
         this._videoLink.ask({ op: 'test', width: s.width, height: s.height, fps: s.fps, seconds: 8, rect: this._videoRect() })
-            .then((r) => logger.info('video test' + (r.throughDecoder ? ' (encoded and decoded, as a stream is)' : ' (no encoder here: the display only)')),
+            .then((r) => logger.info('video test' + (r.throughDecoder ? ' (a 720p 60 fps clip, decoded and shown as fast as it can)' : ' (no working decoder: the display only)')),
                 (err) => { this._video.testing = false; this._note = 'Video test: ' + err.message; this._warn = true; this._dirty = true; });
     }
 
@@ -471,6 +520,7 @@ class RemotePlayApp extends OnlineApp {
             remote: this._saved.remote, internet: this._canInternet(), route: this._route(),
             engine: this._engineInfo, video: this._video, pad: this._usbPad && this._usbPad.name, parked: this._gate.parked,
             url: this._signUrl, qr: this._view === 'signin' ? this._qr : null, pin: this._pin, pairing: this._pairing,
+            code: this._code, shift: this._shift, signing: this._signing,
             session: this._session, input: this._view === 'play' ? (this._usbPad ? this._usbPad.state : this._pad.state) : null,
             logs: this._view === 'logs' ? logger.lines : null, logPage: this._logPage,
         };
@@ -550,7 +600,7 @@ class RemotePlayApp extends OnlineApp {
         if (this._shutdown || this._visible === visible) return;
         this._visible = visible;
         if (!visible && this._view === 'play') this._endPlay('the app was closed');
-        if (!visible && this._view === 'signin') { this._signIn.stop(); this._view = 'home'; }
+        if (!visible && (this._view === 'signin' || this._view === 'code') && !this._signing) { this._signIn.stop(); this._view = 'home'; }
         this._syncGpu();
         if (visible) { this._written = {}; this._render(); }
         const reports = visible ? [this.registerActive(), this.registerHmiVisible()] : [this.unregisterHmiVisible(), this.registerInactive()];
@@ -621,7 +671,7 @@ class RemotePlayApp extends OnlineApp {
         if (!gpu || !gpu.ready || !gpu.visible) return;
         const m = this._model();
         const last = logger.lines[logger.lines.length - 1];
-        const key = JSON.stringify(Object.assign({}, m, { qr: m.qr ? m.url : null, logs: m.logs ? m.logs.length + ':' + (last && last.t + last.text) : null }));
+        const key = JSON.stringify(Object.assign({}, m, { qr: m.qr ? 'qr' + m.qr.size + ':' + (this._saved.duid || '') : null, logs: m.logs ? m.logs.length + ':' + (last && last.t + last.text) : null }));
         const now = Date.now();
         if (gpu.waiting && now - gpu.sentAt < 1000) return;
         if (key === u.key && now - gpu.sentAt < 1000) return;
