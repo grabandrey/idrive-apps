@@ -1,0 +1,34 @@
+{
+  "id": "ida-airplay-engine",
+  "kind": "tool",
+  "version": "1.0.0",
+  "title": "AirPlay Engine",
+  "description": "The AirPlay receiver for the AirPlay app: announces the car to iPhones and iPads on the car's networks, pairs with them (a PIN on the car's screen the first time), and passes their mirrored screen to Remote Play Video, which decodes it in hardware. Built on UxPlay's AirPlay library (GPL-3.0); its source and build script are installed with it. EXPERIMENTAL, untested on a car.",
+  "optional": true,
+  "uninstallable": true,
+  "mguHmi": ["ID8"],
+  "requires": {
+    "mgu-deploy": "0.7.0"
+  },
+  "files": [
+    { "path": "start.sh", "from": "start.sh", "mode": "0755" },
+    { "path": "bin/x86_64/ida-airplay-engine", "from": "bin/x86_64/ida-airplay-engine", "mode": "0755" },
+    { "path": "bin/aarch64/ida-airplay-engine", "from": "bin/aarch64/ida-airplay-engine", "mode": "0755" },
+    { "path": "LICENSE", "from": "LICENSE", "mode": "0644" },
+    { "path": "engine.c", "from": "engine.c", "mode": "0644" },
+    { "path": "mdns_ifaces.c", "from": "mdns_ifaces.c", "mode": "0644" },
+    { "path": "build.sh", "from": "build.sh", "mode": "0644" },
+    { "path": "licenses/libplist.txt", "from": "licenses/libplist.txt", "mode": "0644" },
+    { "path": "licenses/llhttp.txt", "from": "licenses/llhttp.txt", "mode": "0644" },
+    { "path": "licenses/openssl.txt", "from": "licenses/openssl.txt", "mode": "0644" },
+    { "path": "licenses/playfair.txt", "from": "licenses/playfair.txt", "mode": "0644" }
+  ],
+  "units": [
+    { "name": "ida-airplay-engine.service", "from": "ida-airplay-engine.service" }
+  ],
+  "enable": [
+    { "unit": "ida-airplay-engine.service", "target": "multi-user.target" }
+  ],
+  "recmgr": ["ida-airplay-engine"],
+  "restart": ["ida-airplay-engine.service"]
+}
