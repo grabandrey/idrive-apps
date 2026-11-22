@@ -18,6 +18,9 @@
  *   -> {"op":"start","name":"iDrive","access":"pin"|"open","video":{"socket",..anything the video tool takes..}}
  *                                                       advertise and accept phones; the video object is the start
  *                                                       of the stream's header line
+ *                                                       "video":{"mode":"soft"}: no video tool (no GStreamer on the head
+ *                                                       unit): the picture is decoded here and handed to the app on
+ *                                                       <run>/frames.sock (soft_video.c), and the phone asked for 720p30
  *   -> {"op":"view","video":{"aspect","rect",..}}     merged into the video object (for the next stream)
  *   -> {"op":"stop"}                                  stop advertising, drop the phone, end the video
  *   -> {"op":"status"}                                <- {"ok":true,"advertising","name","mirroring","width","height"}
@@ -35,6 +38,7 @@
 #include "raop.h"
 #include "dnssd.h"
 #include "logger.h"
+#include "soft_video.h"
 #include <plist/plist.h>
 
 #include <errno.h>
@@ -52,7 +56,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define ENGINE_VERSION "1.1.0"
+#define ENGINE_VERSION "1.2.0"
 #define DEFAULT_RUN "/run/ida-airplay-engine"
 #define DEFAULT_DATA "/var/opt/ida-airplay-engine"
 #define MAX_LINE 65536
@@ -129,6 +133,7 @@ static struct {
 	unsigned short port;
 	char name[128];
 	int pin;                 /* "pin" access: a PIN the first time a phone connects */
+	int soft;                /* decoded here, drawn by the app (no GStreamer) */
 	plist_t video;           /* the app's video object: the start of the stream's header */
 	int open;                /* connections */
 	/* the mirrored screen */
@@ -269,6 +274,13 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp, video_decode_struct *v)
 	if(!v || !v->data || v->data_len <= 0) return;
 	pthread_mutex_lock(&st_lock);
 	if(!S.codec) S.codec = v->is_h265 ? 2 : 1;
+	if(S.soft)
+	{
+		int h265 = S.codec == 2;
+		pthread_mutex_unlock(&st_lock);
+		sv_feed(v->data, v->data_len, h265);
+		return;
+	}
 	keep_sps_pps(v->data, (size_t)v->data_len);
 	int fresh = 0;
 	if(S.vfd < 0 && S.video)
@@ -296,6 +308,7 @@ static int cb_codec_and_size(void *cls, video_codec_t codec, unsigned short ws, 
 	S.sps_pps_len = 0;
 	video_close("a new stream");
 	pthread_mutex_unlock(&st_lock);
+	if(S.soft) sv_reset();
 	say("info", "mirror: %s %ux%u", codec == VIDEO_CODEC_H265 ? "H.265" : "H.264", ws, hs);
 	plist_t o = ev_new("mirror");
 	set_str(o, "state", "started");
@@ -460,10 +473,11 @@ static const char *receiver_start(void)
 	raop_set_log_level(S.raop, LOGGER_INFO);
 	if(raop_init2(S.raop, 1, device_id, key_path)) { free(S.raop); S.raop = NULL; return "the AirPlay library did not start (its key)"; }
 	/* what the phone is told about the screen: 1920x1080 at up to 60 fps (it keeps its own shape inside that) */
-	raop_set_plist(S.raop, "width", 1920);
-	raop_set_plist(S.raop, "height", 1080);
+	/* decoded here (soft): 720p at 30 fps, which a head unit's processor can decode */
+	raop_set_plist(S.raop, "width", S.soft ? 1280 : 1920);
+	raop_set_plist(S.raop, "height", S.soft ? 720 : 1080);
 	raop_set_plist(S.raop, "refreshRate", 60);
-	raop_set_plist(S.raop, "maxFPS", 60);
+	raop_set_plist(S.raop, "maxFPS", S.soft ? 30 : 60);
 	if(S.pin) raop_set_plist(S.raop, "pin", 0);
 	unsigned short tcp[3] = { 0, 0, 0 }, udp[3] = { 0, 0, 0 };
 	raop_set_tcp_ports(S.raop, tcp);
@@ -482,7 +496,8 @@ static const char *receiver_start(void)
 		receiver_stop();
 		return "cannot announce the receiver (UDP 5353 in use, or no multicast)";
 	}
-	say("info", "receiver \"%s\" on port %u (%s access), id %s", S.name, S.port, S.pin ? "PIN" : "open", device_id);
+	say("info", "receiver \"%s\" on port %u (%s access, %s), id %s", S.name, S.port, S.pin ? "PIN" : "open",
+		S.soft ? "decoded here, drawn by the app" : "to the video tool", device_id);
 	return NULL;
 }
 
@@ -514,6 +529,7 @@ static void handle(plist_t m)
 		set_str(o, "name", "AirPlay Engine");
 		set_str(o, "version", ENGINE_VERSION);
 		set_str(o, "deviceId", device_id);
+		set_bool(o, "soft", 1);
 		reply(id, o, NULL);
 	}
 	else if(!strcmp(op, "start"))
@@ -525,16 +541,19 @@ static void handle(plist_t m)
 		snprintf(want, sizeof(want), "%s", name && *name ? name : "iDrive");
 		for(char *c = want; *c; c++) if(*c == '.' || *c == '@') *c = ' ';
 		plist_t video = plist_dict_get_item(m, "video");
+		const char *mode = video ? str_of(video, "mode") : NULL;
+		int soft = mode && !strcmp(mode, "soft");
 		pthread_mutex_lock(&st_lock);
 		if(S.video) plist_free(S.video);
 		S.video = video && plist_get_node_type(video) == PLIST_DICT ? plist_copy(video) : plist_new_dict();
 		pthread_mutex_unlock(&st_lock);
 		const char *err = NULL;
-		if(S.raop && (strcmp(want, S.name) || pin != S.pin)) receiver_stop();
+		if(S.raop && (strcmp(want, S.name) || pin != S.pin || soft != S.soft)) receiver_stop();
 		if(!S.raop)
 		{
 			snprintf(S.name, sizeof(S.name), "%s", want);
 			S.pin = pin;
+			S.soft = soft;
 			err = receiver_start();
 		}
 		plist_t o = plist_new_dict();
@@ -566,7 +585,12 @@ static void handle(plist_t m)
 		pthread_mutex_lock(&st_lock);
 		set_bool(o, "mirroring", S.mirroring);
 		set_int(o, "width", S.width); set_int(o, "height", S.height); set_int(o, "open", S.open);
+		set_bool(o, "soft", S.soft);
 		pthread_mutex_unlock(&st_lock);
+		unsigned long dec = 0, sent = 0;
+		int app = 0;
+		sv_stats(&dec, &sent, &app);
+		set_int(o, "decoded", (int64_t)dec); set_int(o, "drawn", (int64_t)sent); set_bool(o, "drawing", app);
 		reply(id, o, NULL);
 	}
 	else if(!strcmp(op, "forget"))
@@ -597,6 +621,7 @@ int main(int argc, char **argv)
 	say("info", "AirPlay Engine %s starting", ENGINE_VERSION);
 	ntp_global_init();
 	ida_mdns_report = on_mdns;
+	sv_start(run_dir);
 	load_identity();
 
 	int srv = socket(AF_UNIX, SOCK_STREAM, 0);

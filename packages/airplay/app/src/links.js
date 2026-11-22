@@ -18,6 +18,11 @@
  *     -> {"op":"stop"}  {"op":"status"}  {"op":"forget"}
  *     <- {"ev":"client","name","model","deviceId"}  {"ev":"pin","pin":"1234"}  {"ev":"conn","open":1}
  *     <- {"ev":"mirror","state":"started"|"paused"|"resumed"|"stopped","width","height","codec","reason"}
+ *     <- {"ev":"net","how":"..."}                         where the phone finds the car
+ *     (no GStreamer: "video":{"mode":"soft"}, and the pictures on FRAMES_SOCKET: frames.js)
+ *
+ *   wifi   /run/ida-airplay-wifi/ctl.sock           the Wi-Fi tool (packages/airplay/wifi, root)
+ *     -> {"op":"status"}  {"op":"scan","iface"}  {"op":"connect","iface","ssid","psk"}  {"op":"disconnect","iface"}
  */
 const net = require('net');
 const fs = require('fs');
@@ -26,6 +31,8 @@ const EventEmitter = require('events');
 const VIDEO_SOCKET = '/run/ida-remoteplay-video/ctl.sock';
 const ENGINE_SOCKET = '/run/ida-airplay-engine/engine.sock';
 const STREAM_SOCKET = '/run/ida-remoteplay-video/stream.sock';
+const FRAMES_SOCKET = '/run/ida-airplay-engine/frames.sock';
+const WIFI_SOCKET = '/run/ida-airplay-wifi/ctl.sock';
 
 function isSocket(p) { try { return fs.statSync(p).isSocket(); } catch (e) { return false; } }
 
@@ -113,4 +120,4 @@ class JsonLink extends EventEmitter {
     tell(msg) { if (this.ready) this.sock.write(JSON.stringify(msg) + '\n'); }
 }
 
-module.exports = { JsonLink, VIDEO_SOCKET, ENGINE_SOCKET, STREAM_SOCKET, isSocket };
+module.exports = { JsonLink, VIDEO_SOCKET, ENGINE_SOCKET, STREAM_SOCKET, FRAMES_SOCKET, WIFI_SOCKET, isSocket };

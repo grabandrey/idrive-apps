@@ -1,0 +1,16 @@
+[Unit]
+Description=AirPlay Wi-Fi: the head unit's Wi-Fi for the AirPlay app (status, the devices on the car's access point, scan, connect)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /var/opt/ida-airplay-wifi/current/wifi.js
+# the car's system.conf has DefaultStandardOutput=null: the log would never reach the journal
+StandardOutput=journal
+# the app's socket: /run/ida-airplay-wifi/ctl.sock (0666, the app runs as its own uid)
+RuntimeDirectory=ida-airplay-wifi
+RuntimeDirectoryMode=0755
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

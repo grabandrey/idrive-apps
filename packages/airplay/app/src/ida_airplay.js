@@ -9,6 +9,12 @@
  *                Fit (the phone's own shape), Stretch (the whole area), 16:9, 16:10, 4:3, 21:9, 1:1. The shape changes
  *                at once while the phone mirrors; it's kept for next time. Disconnect drops the phone.
  *
+ * Without GStreamer on the head unit (the video tool finds none), the engine decodes the phone's picture itself and
+ * hands it over (frames.js); it's drawn here through the Renderer, in the same shapes, at fewer frames a second.
+ *
+ * Wi-Fi (the Wi-Fi tool, ida-airplay-wifi, root): what the head unit's Wi-Fi is doing (the car's access point and the
+ * devices on it, or the network the car is on), the networks around, and Connect (a password keyboard) / Disconnect.
+ *
  * Only while parked: the speed (Vehicle2.statusCarSpeed2) must read 0 (within the last 5 s) for the receiver to be on,
  * and anything over 3 km/h drops the phone and the picture at once.
  *
@@ -25,7 +31,8 @@ const logging = require('oap-sdk/src/logging/logging');
 const { SomeipLink } = require('./someip_link.js');
 const { Gpu } = require('./gpu.js');
 const ui = require('./ui.js');
-const { JsonLink, VIDEO_SOCKET, ENGINE_SOCKET, STREAM_SOCKET } = require('./links.js');
+const { JsonLink, VIDEO_SOCKET, ENGINE_SOCKET, STREAM_SOCKET, FRAMES_SOCKET, WIFI_SOCKET } = require('./links.js');
+const { Frames } = require('./frames.js');
 const { LogRing } = require('./log_ring.js');
 const { Gate } = require('./gate.js');
 
@@ -38,7 +45,10 @@ const LIST_BUTTONS = ['apToggle', 'apAspect', 'apAccess', 'apForget', 'apLogs', 
 const LINE_ROWS = 30;
 const RENDER_MS = 1000;
 const FRAME_MS = 100;
-const PIN_MS = 120000;              // the PIN stays on the screen this long (or until the phone mirrors)
+const PIN_MS = 120000;
+const SOFT_FRAME_MS = 20;           // without GStreamer: how often a new picture is looked for
+const WIFI_MS = 3000;               // the Wi-Fi screen's status, again
+const NO_TOOL_MS = 8000;            // no video tool by then: the engine decodes              // the PIN stays on the screen this long (or until the phone mirrors)
 const ID8_AREA = { x: 0, y: 76, w: 2880, h: 764 };
 const DEFAULTS = { name: 'iDrive', access: 'pin', aspect: 'fit', enabled: true };
 const FOREGROUND_REASONS = ['ENTRY_POINT', 'LUM', 'BOOKMARK', 'START_WIDGET', 'TRIGGER_HMI', 'SPEECH_COMMAND'];
@@ -112,6 +122,11 @@ class AirPlayApp extends OnlineApp {
         this._pin = null;                    // { pin, at }
         this._mirror = null;                 // { state: 'waiting'|'playing'|'paused', reason }
         this._video = { tool: false, probe: null, fps: null };
+        this._startedAt = Date.now();
+        this._pic = null;                    // without GStreamer: the newest picture { w, h, n }, and whether it's drawn
+        this._frames = new Frames(FRAMES_SOCKET, logger);
+        this._wifiLink = new JsonLink('Wi-Fi tool', WIFI_SOCKET, logger);
+        this._wifi = { tool: false, status: null, tab: 'status', networks: null, scanning: false, iface: null, target: null, pass: '', shift: false, sym: false, connecting: null, note: null, warn: false };
         this._videoLink = new JsonLink('video tool', VIDEO_SOCKET, logger);
         this._engine = new JsonLink('AirPlay engine', ENGINE_SOCKET, logger);
         this._link = new SomeipLink(logger);
@@ -204,8 +219,20 @@ class AirPlayApp extends OnlineApp {
             this._dirty = true;
         });
         e.on('conn', (m) => { if (!m.open && this._phone && this._view !== 'mirror') { this._phone.state = 'disconnected'; this._dirty = true; } });
+        const w = this._wifiLink;
+        w.on('ready', () => { this._wifi.tool = true; this._wifiStatus(); });
+        w.on('lost', () => { this._wifi.tool = false; this._wifi.status = null; this._dirty = true; });
+        this._frames.on('frame', (fw, fh, rgba) => {
+            this._pic = { w: fw, h: fh, n: (this._pic ? this._pic.n : 0) + 1, drawn: false };
+            if (this._gpu) this._gpu.picture(ui.PIC_ID, fw, fh, rgba);
+            if (this._mirror && this._mirror.state === 'waiting') { this._mirror.state = 'playing'; this._dirty = true; }
+        });
+        this._frames.on('ready', () => this._frames.want());
         v.connect();
         e.connect();
+        w.connect();
+        this._frames.connect();
+        this._timers.push(setInterval(() => { if (this._view === 'home' || this._view === 'wifi') this._wifiStatus(); }, WIFI_MS));
     }
 
     _mirrorEvent(m) {
@@ -214,6 +241,7 @@ class AirPlayApp extends OnlineApp {
             this._pin = null;
             if (this._phone) this._phone.state = 'mirroring';
             else this._phone = { name: 'A phone', state: 'mirroring' };
+            this._pic = null;
             this._mirror = { state: 'waiting', reason: m.width ? m.width + 'x' + m.height + ' ' + (m.codec || '').toUpperCase() : null };
             logger.info('mirroring: ' + (m.width ? m.width + 'x' + m.height : '') + ' ' + (m.codec || ''));
             this._view = 'mirror';
@@ -223,6 +251,7 @@ class AirPlayApp extends OnlineApp {
         } else if (m.state === 'resumed' && this._mirror) {
             this._mirror.state = 'playing';
         } else if (m.state === 'stopped') {
+            this._pic = null;
             if (this._phone) this._phone.state = 'disconnected';
             if (this._view === 'mirror') this._endMirror(m.reason || 'the phone stopped mirroring');
         }
@@ -265,20 +294,33 @@ class AirPlayApp extends OnlineApp {
         return ui.toScreen(pl, ui.VIDEO);
     }
 
-    _videoSpec() {
-        return { socket: STREAM_SOCKET, rect: this._videoArea(), aspect: this._saved.aspect, fps: 60 };
+    /* the video tool's hardware path when its GStreamer works; the engine's own decoding when the head unit has none
+     * (or no video tool); null while that's not known yet. "video": "hw" | "soft" in airplay.json picks one */
+    _mode() {
+        if (this._saved.video === 'hw' || this._saved.video === 'soft') return this._saved.video;
+        const p = this._video.probe;
+        if (p) return p.decoder && p.sink && !p.why ? 'hw' : 'soft';
+        if (!this._video.tool && Date.now() - this._startedAt > NO_TOOL_MS) return 'soft';
+        return null;
+    }
+
+    _videoSpec(mode) {
+        return { socket: STREAM_SOCKET, rect: this._videoArea(), aspect: this._saved.aspect, fps: 60, mode: mode };
     }
 
     /* the receiver on exactly while it should be: the app on the screen, parked, switched on, both parts there */
     _sync() {
         const r = this._receiver;
         if (r.busy || this._shutdown) return;
-        const want = !!(this._visible && this._gate.parked === true && this._saved.enabled && this._engine.ready && this._video.tool);
+        const mode = this._mode();
+        const want = !!(this._visible && this._gate.parked === true && this._saved.enabled && this._engine.ready && mode);
+        if (want && r.on && r.mode !== mode) { r.on = false; logger.info('receiver: the picture ' + (mode === 'soft' ? 'decoded by the engine' : 'through the video tool') + ' from now on'); }
         if (want && !r.on) {
             r.busy = true;
-            this._engine.ask({ op: 'start', name: this._saved.name, access: this._saved.access, video: this._videoSpec() }, 15000).then((res) => {
-                r.on = true; r.name = res.name; r.error = null;
-                logger.info('receiver on: "' + res.name + '" (' + (this._saved.access === 'open' ? 'open' : 'PIN') + ') on ' + (addresses().join(', ') || 'no private network yet'));
+            this._engine.ask({ op: 'start', name: this._saved.name, access: this._saved.access, video: this._videoSpec(mode) }, 15000).then((res) => {
+                r.on = true; r.name = res.name; r.error = null; r.mode = mode;
+                logger.info('receiver on: "' + res.name + '" (' + (this._saved.access === 'open' ? 'open' : 'PIN') + ', ' +
+                    (mode === 'soft' ? 'no GStreamer: the engine decodes the picture' : 'the video tool\'s hardware decoder') + ')');
             }, (err) => {
                 if (r.error !== err.message) logger.warn('receiver: ' + err.message);
                 r.on = false; r.error = err.message;
@@ -300,7 +342,7 @@ class AirPlayApp extends OnlineApp {
         this._save();
         logger.info('picture shape: ' + ui.aspectLabel(a));
         if (this._engine.ready) this._engine.ask({ op: 'view', video: { aspect: a, rect: this._videoArea() } }).catch(() => null);
-        if (this._videoLink.ready) this._videoLink.ask({ op: 'view', aspect: a }).catch((err) => logger.warn('picture shape: ' + err.message));
+        if (this._receiver.mode !== 'soft' && this._videoLink.ready) this._videoLink.ask({ op: 'view', aspect: a }).catch((err) => logger.warn('picture shape: ' + err.message));
     }
 
     _endMirror(why) {
@@ -323,7 +365,7 @@ class AirPlayApp extends OnlineApp {
     _press(name) {
         const now = Date.now();
         this._pressedAt = this._pressedAt || {};
-        if (now - (this._pressedAt[name] || 0) < 400) return;        // the same press by both paths
+        if (now - (this._pressedAt[name] || 0) < (/^apK/.test(name) ? 120 : 400)) return;        // the same press by both paths (keys: typed twice is fine)
         this._pressedAt[name] = now;
         const shape = /^apA_(.+)$/.exec(name);
         if (shape) this._setAspect(shape[1]);
@@ -339,13 +381,90 @@ class AirPlayApp extends OnlineApp {
                 (err) => { this._note = 'Forget: ' + err.message; this._warn = true; }).then(() => { this._dirty = true; });
         } else if (name === 'apPinDone') this._pin = null;
         else if (name === 'apDisconnect') this._endMirror('Disconnect');
+        else if (/^apW|^apK/.test(name) && (this._view === 'wifi' || this._view === 'wifipass')) this._wifiPress(name);
+        else if (name === 'apWifi') { this._view = 'wifi'; this._wifi.note = null; this._wifiStatus(); }
         else if (name === 'apLogs') { this._view = this._view === 'logs' ? 'home' : 'logs'; this._logPage = 0; this._written = {}; }
         else if (name === 'apOlder' && this._view === 'logs') this._logPage = Math.min(this._logPage + 1, ui.logPages(logger.lines.length, this._perPage()) - 1);
         else if (name === 'apNewer' && this._view === 'logs') this._logPage = Math.max(0, this._logPage - 1);
+        else if (name === 'apClose' && this._view === 'wifi') { this._view = 'home'; this._written = {}; }
         else if (name === 'apClose') { this._view = 'home'; this._note = null; this._warn = false; this._written = {}; }
         this._dirty = true;
         this._render();
         this._frame();
+    }
+
+    /* ---- Wi-Fi ---- */
+    _wifiStatus() {
+        const wf = this._wifi;
+        if (!this._wifiLink.ready || wf.asking) return;
+        wf.asking = true;
+        this._wifiLink.ask({ op: 'status' }, 15000).then((st) => {
+            const was = JSON.stringify(wf.status && wf.status.ifaces.map((i) => [i.name, i.kind, i.ssid, i.clients.length]));
+            wf.status = { ifaces: st.ifaces || [], others: st.others || [], tools: st.tools || [] };
+            const now = JSON.stringify(wf.status.ifaces.map((i) => [i.name, i.kind, i.ssid, i.clients.length]));
+            if (was !== now) logger.info('Wi-Fi: ' + ui.wifiSummary(wf.status));
+        }, (err) => { wf.note = 'Wi-Fi: ' + err.message; wf.warn = true; }).then(() => { wf.asking = false; this._dirty = true; });
+    }
+
+    /* the interface that can join a network: the one that isn't the car's access point (else the first) */
+    _clientIface() {
+        const st = this._wifi.status;
+        if (!st || !st.ifaces.length) return null;
+        return (st.ifaces.filter((i) => i.kind === 'station')[0] || st.ifaces.filter((i) => i.kind !== 'ap')[0] || st.ifaces[0]).name;
+    }
+
+    _wifiPress(name) {
+        const wf = this._wifi;
+        const ch = /^apKc_(.)$/.exec(name);
+        if (this._view === 'wifipass' && !wf.connecting) {
+            if (ch && wf.pass.length < 63) wf.pass += ch[1];
+            else if (name === 'apKSpace' && wf.pass.length < 63) wf.pass += ' ';
+            else if (name === 'apKDel') wf.pass = wf.pass.slice(0, -1);
+            else if (name === 'apKClear') wf.pass = '';
+            else if (name === 'apKShift') wf.shift = !wf.shift;
+            else if (name === 'apKSym') wf.sym = !wf.sym;
+            else if (name === 'apWBack') { this._view = 'wifi'; wf.pass = ''; wf.note = null; }
+            else if (name === 'apKConnect') this._wifiConnect(wf.target, wf.pass);
+            return;
+        }
+        if (name === 'apWStatus') { wf.tab = 'status'; this._wifiStatus(); }
+        else if (name === 'apWScan') this._wifiScan();
+        else if (name === 'apWDisc') {
+            const iface = this._clientIface();
+            wf.note = 'Disconnecting ' + iface + '...'; wf.warn = false;
+            this._wifiLink.ask({ op: 'disconnect', iface: iface }, 15000).then(() => { wf.note = iface + ' disconnected.'; logger.info('Wi-Fi: ' + iface + ' disconnected'); },
+                (err) => { wf.note = 'Disconnect: ' + err.message; wf.warn = true; }).then(() => { this._wifiStatus(); this._dirty = true; });
+        } else {
+            const n = /^apWn_(\d+)$/.exec(name), net = n && wf.networks && wf.networks[+n[1]];
+            if (!net || wf.connecting) return;
+            wf.target = net.ssid; wf.pass = ''; wf.shift = false; wf.sym = false; wf.note = null; wf.warn = false;
+            if (net.secure) this._view = 'wifipass';
+            else this._wifiConnect(net.ssid, '');
+        }
+    }
+
+    _wifiScan() {
+        const wf = this._wifi, iface = this._clientIface();
+        if (!iface || wf.scanning) return;
+        wf.tab = 'networks'; wf.scanning = true; wf.iface = iface; wf.note = null; wf.warn = false;
+        this._wifiLink.ask({ op: 'scan', iface: iface }, 30000).then((r) => {
+            wf.networks = r.networks || [];
+            logger.info('Wi-Fi scan on ' + iface + ': ' + wf.networks.length + ' networks');
+        }, (err) => { wf.networks = null; wf.note = err.message; wf.warn = true; logger.warn('Wi-Fi scan: ' + err.message); })
+            .then(() => { wf.scanning = false; this._dirty = true; });
+    }
+
+    _wifiConnect(ssid, psk) {
+        const wf = this._wifi, iface = this._clientIface();
+        if (!iface || !ssid) return;
+        wf.connecting = ssid; wf.note = 'Connecting ' + iface + ' to "' + ssid + '"...'; wf.warn = false;
+        logger.info('Wi-Fi: connecting ' + iface + ' to "' + ssid + '"');
+        this._wifiLink.ask({ op: 'connect', iface: iface, ssid: ssid, psk: psk }, 75000).then((r) => {
+            wf.note = 'Connected to "' + ssid + '"' + (r.ip ? ': ' + r.ip : ' (no address yet)'); wf.warn = !r.ip;
+            logger.info('Wi-Fi: ' + wf.note);
+            wf.pass = ''; wf.tab = 'status'; this._view = 'wifi';
+        }, (err) => { wf.note = err.message; wf.warn = true; logger.warn('Wi-Fi connect: ' + err.message); })
+            .then(() => { wf.connecting = null; this._wifiStatus(); this._dirty = true; this._render(); this._frame(); });
     }
 
     _perPage() { return this._gpu && this._gpu.ready ? ui.LOG_PER_PAGE : LINE_ROWS; }
@@ -356,6 +475,9 @@ class AirPlayApp extends OnlineApp {
             engine: this._engineInfo, receiver: this._receiver, enabled: this._saved.enabled, access: this._saved.access, name: this._saved.name,
             aspect: this._saved.aspect, phone: this._phone, pin: this._pin && this._pin.pin, mirror: this._mirror,
             video: this._video, parked: this._gate.parked, addresses: this._view === 'home' ? addresses() : null,
+            soft: this._receiver.mode === 'soft' || (!this._receiver.on && this._mode() === 'soft'),
+            pic: this._view === 'mirror' && this._pic ? { w: this._pic.w, h: this._pic.h, n: this._pic.n } : null,
+            wifi: this._view === 'home' || this._view === 'wifi' || this._view === 'wifipass' ? this._wifi : null,
             logs: this._view === 'logs' ? logger.lines : null, logPage: this._logPage,
         };
     }
@@ -495,6 +617,14 @@ class AirPlayApp extends OnlineApp {
         gpu.on('lost', () => { this._ui.key = ''; });
         gpu.connect();
         this._ui.timer = setInterval(() => this._frame(), FRAME_MS);
+        // without GStreamer: each new picture drawn as soon as the renderer has taken the last frame, then the next asked for
+        this._ui.softTimer = setInterval(() => {
+            const p = this._pic;
+            if (this._view !== 'mirror' || !p || p.drawn || !gpu.ready || !gpu.visible || (gpu.waiting && Date.now() - gpu.sentAt < 1000)) return;
+            p.drawn = true;
+            this._frame(true);
+            this._frames.want();
+        }, SOFT_FRAME_MS);
     }
 
     _syncGpu(again) {
@@ -506,7 +636,7 @@ class AirPlayApp extends OnlineApp {
         if (on) { this._ui.key = ''; this._frame(); }
     }
 
-    _frame() {
+    _frame(force) {
         const gpu = this._gpu, u = this._ui;
         if (!gpu || !gpu.ready || !gpu.visible) return;
         const m = this._model();
@@ -514,7 +644,7 @@ class AirPlayApp extends OnlineApp {
         const key = JSON.stringify(Object.assign({}, m, { logs: m.logs ? m.logs.length + ':' + (last && last.t + last.text) : null }));
         const now = Date.now();
         if (gpu.waiting && now - gpu.sentAt < 1000) return;
-        if (key === u.key && now - gpu.sentAt < 1000) return;
+        if (!force && key === u.key && now - gpu.sentAt < 1000) return;
         u.key = key;
         u.targets = ui.draw(u.rec, m).targets;
         // in Mirror, only the band takes touches: the phone's picture is left alone
@@ -544,6 +674,9 @@ class AirPlayApp extends OnlineApp {
         if (this._view === 'mirror') this._endMirror('the app stopped');
         this._timers.forEach((t) => { clearInterval(t); clearTimeout(t); });
         clearInterval(this._ui.timer);
+        clearInterval(this._ui.softTimer);
+        this._frames.close();
+        this._wifiLink.close();
         if (this._gpu) this._gpu.close();
         this._shutdown = within(Promise.all([this._engine.ask({ op: 'stop' }, 1500).catch(() => null), this._videoLink.ask({ op: 'stop' }, 1500).catch(() => null)]), 2000, 'stop')
             .then(() => { this._videoLink.close(); this._engine.close(); return this._link.stop(); })

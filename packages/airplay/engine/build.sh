@@ -5,11 +5,12 @@
 #   packages/airplay/engine/build.sh [x86_64|aarch64|native ...]        (default: x86_64 aarch64)
 #
 # What it builds, all from upstream source at pinned versions:
-#   UxPlay's AirPlay library (lib/, GPL-3.0 with LGPL-2.1 parts, unmodified; its mdnsd.c replaced by mdns_ifaces.c,
-#   which answers on every private interface), libplist (LGPL-2.1, also the engine's JSON) and OpenSSL's libcrypto
+#   UxPlay's AirPlay library (lib/, GPL-3.0 with LGPL-2.1 parts, unmodified; its mdnsd.c replaced by mdns_ifaces.c),
+#   libplist (LGPL-2.1, also the engine's JSON), OpenSSL's libcrypto, and FFmpeg's H.264 decoder and scaler only
+#   (libavcodec, libswscale, libavutil; LGPL-2.1): the picture for head units without GStreamer
 #   engine.c and mdns_ifaces.c, this package's own code around it
 #
-# Needs: git, make, perl, python3 with zig (pip install ziglang). "native" builds with the host's cc and OpenSSL
+# Needs: git, make, perl, nasm, python3 with zig (pip install ziglang). "native" builds with the host's cc and OpenSSL
 # (for a quick test on a desktop). The compiler is zig cc, so one machine builds both architectures.
 set -euo pipefail
 
@@ -19,6 +20,7 @@ JOBS="${JOBS:-$(nproc)}"
 UXPLAY=(https://github.com/FDH2/UxPlay.git 48f5ce47c9ef694afccfac907c9e8828329657fe)
 LIBPLIST=(https://github.com/libimobiledevice/libplist.git 2.7.0)
 OPENSSL=(https://github.com/openssl/openssl.git openssl-3.0.15)
+FFMPEG=(https://github.com/FFmpeg/FFmpeg.git n7.1.5)
 TARGETS=("$@")
 [ ${#TARGETS[@]} -eq 0 ] && TARGETS=(x86_64 aarch64)
 
@@ -46,7 +48,7 @@ for ARCH in "${TARGETS[@]}"; do
     T="$WORK/$ARCH"
     mkdir -p "$T/obj" "$T/bin"
     if [ "$ARCH" = native ]; then
-        CC=cc; AR=ar; CRYPTO_INC=(); CRYPTO_LIB=(-lcrypto); STATIC=()
+        CC=cc; AR=ar; CRYPTO_INC=(); CRYPTO_LIB=(-lcrypto); STATIC=(); P="$T/prefix"; FFARCH=(--arch=x86_64)
     else
         ZIG="$(python3 -c 'import ziglang, os; print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))')"
         TRIPLE="$ARCH-linux-musl"
@@ -63,12 +65,23 @@ for ARCH in "${TARGETS[@]}"; do
                 && make -j "$JOBS" build_libs >/dev/null && make install_dev >/dev/null)
         fi
         CRYPTO_INC=(-I"$P/include"); CRYPTO_LIB=("$P/lib/libcrypto.a"); STATIC=(-static)
+        FFARCH=(--enable-cross-compile --arch="$ARCH" --target-os=linux --ar="$AR" --ranlib="$T/bin/ranlib" --nm="nm")
     fi
+    # FFmpeg: the H.264 decoder and the scaler, nothing else (no formats, no network, no devices, nothing autodetected)
+    if [ ! -f "$P/lib/libavcodec.a" ]; then
+        [ -d "$WORK/src/ffmpeg" ] || git -c advice.detachedHead=false clone -q --depth 1 --branch "${FFMPEG[1]}" "${FFMPEG[0]}" "$WORK/src/ffmpeg"
+        rm -rf "$T/ffmpeg" && mkdir -p "$T/ffmpeg"
+        (cd "$T/ffmpeg" && "$WORK/src/ffmpeg/configure" --prefix="$P" --cc="$CC" "${FFARCH[@]}" --enable-static --disable-shared --enable-pic \
+            --disable-everything --disable-autodetect --disable-programs --disable-doc --disable-avdevice --disable-avformat \
+            --disable-avfilter --disable-network --disable-debug --enable-avcodec --enable-swscale --enable-decoder=h264 \
+            --enable-parser=h264 --enable-pthreads >/dev/null && make -j "$JOBS" >/dev/null && make install >/dev/null)
+    fi
+    FF_INC=(-I"$P/include"); FF_LIB=("$P/lib/libswscale.a" "$P/lib/libavcodec.a" "$P/lib/libavutil.a")
 
     DEFS=(-DSTANDALONE -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -DTARGET_POSIX -D_LINUX -D_REENTRANT
         -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -DNOHOLD -DPLIST_210 -DPLIST_230 -DOPENSSL_API_COMPAT=0x10101000L -DHAVE_CONFIG_H)
     INC=(-I"$UX" -I"$UX/playfair" -I"$UX/fairplay_v2" -I"$UX/llhttp" -I"$UX/mdnsd" -I"$PL/include" -I"$PL/src"
-        -I"$PL/libcnary/include" -I"$WORK/plist-config" "${CRYPTO_INC[@]}")
+        -I"$PL/libcnary/include" -I"$WORK/plist-config" "${CRYPTO_INC[@]}" "${FF_INC[@]}")
     SRCS=("$UX"/*.c "$UX"/llhttp/*.c "$UX"/playfair/*.c "$UX"/fairplay_v2/*.c "$UX/mdnsd/dnssd_mdnsd.c" "$HERE/mdns_ifaces.c"
         "$PL"/src/*.c "$PL/libcnary/node.c" "$PL/libcnary/node_list.c")
     OBJS=()
@@ -83,7 +96,7 @@ for ARCH in "${TARGETS[@]}"; do
         fi
     done
     for p in "${pids[@]}"; do wait "$p"; done
-    "$CC" -O2 -Wall "${STATIC[@]}" -o "$T/ida-airplay-engine" "$HERE/engine.c" "${DEFS[@]}" "${INC[@]}" "${OBJS[@]}" "${CRYPTO_LIB[@]}" \
+    "$CC" -O2 -Wall "${STATIC[@]}" -o "$T/ida-airplay-engine" "$HERE/engine.c" "$HERE/soft_video.c" "${DEFS[@]}" "${INC[@]}" "${OBJS[@]}" "${FF_LIB[@]}" "${CRYPTO_LIB[@]}" \
         -Wl,--strip-all -lpthread -lm
     if [ "$ARCH" != native ]; then
         mkdir -p "$HERE/bin/$ARCH"

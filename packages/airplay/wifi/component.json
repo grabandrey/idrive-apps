@@ -1,0 +1,27 @@
+{
+  "id": "ida-airplay-wifi",
+  "kind": "tool",
+  "version": "1.0.0",
+  "title": "AirPlay Wi-Fi",
+  "description": "The Wi-Fi half of the AirPlay app: shows what the head unit's Wi-Fi is doing (the car's access point and the devices on it, or the network the car is on) and connects the car to a network when you ask, through the head unit's own wpa_supplicant and hostapd. EXPERIMENTAL, untested on a car.",
+  "optional": true,
+  "uninstallable": true,
+  "mguHmi": ["ID8"],
+  "requires": {
+    "mgu-deploy": "0.7.0"
+  },
+  "files": [
+    { "path": "wifi.js", "from": "wifi.js", "mode": "0644" },
+    { "path": "bin/x86_64/ida-wpactl", "from": "bin/x86_64/ida-wpactl", "mode": "0755" },
+    { "path": "bin/aarch64/ida-wpactl", "from": "bin/aarch64/ida-wpactl", "mode": "0755" },
+    { "path": "ida-wpactl.c", "from": "ida-wpactl.c", "mode": "0644" }
+  ],
+  "units": [
+    { "name": "ida-airplay-wifi.service", "from": "ida-airplay-wifi.service" }
+  ],
+  "enable": [
+    { "unit": "ida-airplay-wifi.service", "target": "multi-user.target" }
+  ],
+  "recmgr": ["ida-airplay-wifi"],
+  "restart": ["ida-airplay-wifi.service"]
+}
