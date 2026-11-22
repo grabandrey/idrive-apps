@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "id": "ida_remoteplay",
+  "version": "1.2.0",
+  "tree": "package",
+  "modules": [
+    "src/ida_remoteplay.js",
+    "src/login.js",
+    "src/qr.js",
+    "src/discovery.js",
+    "src/links.js",
+    "src/pad.js",
+    "src/gate.js",
+    "src/someip_link.js",
+    "src/gpu.js",
+    "src/ui.js",
+    "src/ui_font.js",
+    "src/log_ring.js"
+  ],
+  "sdk": [
+    "oap-sdk/src/core/OnlineApp.js",
+    "oap-sdk/src/logging/logging",
+    "oap-sdk/src/someip/someipBuilders"
+  ]
+}

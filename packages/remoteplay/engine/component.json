@@ -1,0 +1,41 @@
+{
+  "id": "ida-remoteplay-engine",
+  "kind": "tool",
+  "version": "1.1.0",
+  "title": "Remote Play Engine",
+  "description": "The PlayStation's Remote Play session for the Remote Play app: pairing with the console's PIN, the encrypted stream (its video goes to Remote Play Video), and the controller back to the console, at home or over the internet through PSN. Built on chiaki-ng's library (AGPL-3.0); its source and build script are installed with it. EXPERIMENTAL, untested on a car.",
+  "optional": true,
+  "uninstallable": true,
+  "mguHmi": ["ID8"],
+  "requires": {
+    "mgu-deploy": "0.7.0"
+  },
+  "files": [
+    { "path": "start.sh", "from": "start.sh", "mode": "0755" },
+    { "path": "bin/x86_64/ida-rp-engine", "from": "bin/x86_64/ida-rp-engine", "mode": "0755" },
+    { "path": "bin/aarch64/ida-rp-engine", "from": "bin/aarch64/ida-rp-engine", "mode": "0755" },
+    { "path": "cacert.pem", "from": "cacert.pem", "mode": "0644" },
+    { "path": "LICENSE", "from": "LICENSE", "mode": "0644" },
+    { "path": "engine.c", "from": "engine.c", "mode": "0644" },
+    { "path": "musl_compat.c", "from": "musl_compat.c", "mode": "0644" },
+    { "path": "musl_compat.h", "from": "musl_compat.h", "mode": "0644" },
+    { "path": "build.sh", "from": "build.sh", "mode": "0644" },
+    { "path": "licenses/cacert-mozilla.txt", "from": "licenses/cacert-mozilla.txt", "mode": "0644" },
+    { "path": "licenses/curl.txt", "from": "licenses/curl.txt", "mode": "0644" },
+    { "path": "licenses/gf-complete.txt", "from": "licenses/gf-complete.txt", "mode": "0644" },
+    { "path": "licenses/jerasure.txt", "from": "licenses/jerasure.txt", "mode": "0644" },
+    { "path": "licenses/json-c.txt", "from": "licenses/json-c.txt", "mode": "0644" },
+    { "path": "licenses/libevent.txt", "from": "licenses/libevent.txt", "mode": "0644" },
+    { "path": "licenses/miniupnpc.txt", "from": "licenses/miniupnpc.txt", "mode": "0644" },
+    { "path": "licenses/nanopb.txt", "from": "licenses/nanopb.txt", "mode": "0644" },
+    { "path": "licenses/openssl.txt", "from": "licenses/openssl.txt", "mode": "0644" }
+  ],
+  "units": [
+    { "name": "ida-remoteplay-engine.service", "from": "ida-remoteplay-engine.service" }
+  ],
+  "enable": [
+    { "unit": "ida-remoteplay-engine.service", "target": "multi-user.target" }
+  ],
+  "recmgr": ["ida-remoteplay-engine"],
+  "restart": ["ida-remoteplay-engine.service"]
+}
