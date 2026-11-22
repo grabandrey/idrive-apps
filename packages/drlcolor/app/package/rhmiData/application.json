@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "1.3.0",
+  "application": {
+    "uuid": "cdad6435-116a-4cac-aa2d-1d18c45f54b9",
+    "type": "OnlineApp",
+    "name": "ida_drlcolor",
+    "vendor": "DrlColour",
+    "version": "1.0.0",
+    "defaultLanguage": "en_GB",
+    "uiDescriptions": [
+      {
+        "applicationFilePath": "./uiDescriptions/ID8/application.xml",
+        "uiDescriptionFilePath": "./uiDescriptions/ID8/uiDescription.json",
+        "hmi": [
+          "ID8"
+        ]
+      }
+    ],
+    "stringBundleUuid": "69cf0f30-6b3f-47de-a032-e80be3c58df9",
+    "resourceBundleUuid": "392566a2-58b0-421e-9907-894ae1e54b69",
+    "variantGroups": [
+      {
+        "stringsPath": "./variantGroups/Common/texts",
+        "resourcesPath": "./variantGroups/Common/images",
+        "hmi": [
+          "ID8"
+        ],
+        "brands": [
+          "BMW"
+        ]
+      }
+    ],
+    "entryPoints": [
+      {
+        "name": "ida_drlcolor",
+        "uuid": "136e2d80-8fdd-47ac-96a8-b7e439dd40cc",
+        "textId": "SID_DC_TITLE",
+        "icon": "drlcolor_icon.png",
+        "insertionStateId": 20974,
+        "insertionFocusId": 2,
+        "insertionMode": "INSERT_BELOW",
+        "insertionOrder": 0,
+        "insertionPriority": 0,
+        "previewType": "NONE",
+        "bookmarkable": true,
+        "private": null,
+        "appearance": "DEFAULT",
+        "isGroupHeader": false,
+        "insertionGroup": 0
+      }
+    ]
+  }
+}

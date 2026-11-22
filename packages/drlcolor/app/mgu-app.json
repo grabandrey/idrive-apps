@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "ida_drlcolor",
+  "version": "1.0.0",
+  "tree": "package",
+  "modules": [
+    "src/ida_drlcolor.js",
+    "src/flasher.js",
+    "src/uds.js",
+    "src/lamps.js",
+    "src/someip_link.js",
+    "src/gpu.js",
+    "src/ui.js",
+    "src/ui_font.js",
+    "src/log_ring.js"
+  ],
+  "sdk": [
+    "oap-sdk/src/core/OnlineApp.js",
+    "oap-sdk/src/logging/logging",
+    "oap-sdk/src/someip/someipBuilders"
+  ]
+}

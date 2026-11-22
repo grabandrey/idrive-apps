@@ -1,0 +1,1605 @@
+{
+  "schemaVersion": "1.3.0",
+  "containers": {
+    "1": {
+      "type": "state",
+      "name": "ST_OnlineApps_DrlColour",
+      "components": {
+        "10": {
+          "type": "title",
+          "name": "ST_OnlineApps_DrlColour_Title",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "SID_DC_TITLE",
+                "type": "StringId"
+              }
+            }
+          ]
+        },
+        "20": {
+          "type": "label",
+          "name": "dcStatus",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 0,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "",
+                "type": "Text"
+              }
+            }
+          ]
+        },
+        "21": {
+          "type": "button",
+          "name": "dcFlash",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "Switch colour",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "22": {
+          "type": "button",
+          "name": "dcAuto",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "Auto white",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "23": {
+          "type": "button",
+          "name": "dcFix",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "Wrong colour?",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "24": {
+          "type": "button",
+          "name": "dcLearn",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "Learn the high beams",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "25": {
+          "type": "button",
+          "name": "dcLogs",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "Logs",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "26": {
+          "type": "button",
+          "name": "dcOlder",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "27": {
+          "type": "button",
+          "name": "dcNewer",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "40": {
+          "type": "button",
+          "name": "dcLine0",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "41": {
+          "type": "button",
+          "name": "dcLine1",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "42": {
+          "type": "button",
+          "name": "dcLine2",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "43": {
+          "type": "button",
+          "name": "dcLine3",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "44": {
+          "type": "button",
+          "name": "dcLine4",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "45": {
+          "type": "button",
+          "name": "dcLine5",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "46": {
+          "type": "button",
+          "name": "dcLine6",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "47": {
+          "type": "button",
+          "name": "dcLine7",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "48": {
+          "type": "button",
+          "name": "dcLine8",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "49": {
+          "type": "button",
+          "name": "dcLine9",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "50": {
+          "type": "button",
+          "name": "dcLine10",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "51": {
+          "type": "button",
+          "name": "dcLine11",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "52": {
+          "type": "button",
+          "name": "dcLine12",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "53": {
+          "type": "button",
+          "name": "dcLine13",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "54": {
+          "type": "button",
+          "name": "dcLine14",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "55": {
+          "type": "button",
+          "name": "dcLine15",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "56": {
+          "type": "button",
+          "name": "dcLine16",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "57": {
+          "type": "button",
+          "name": "dcLine17",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "58": {
+          "type": "button",
+          "name": "dcLine18",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "59": {
+          "type": "button",
+          "name": "dcLine19",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "60": {
+          "type": "button",
+          "name": "dcLine20",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "61": {
+          "type": "button",
+          "name": "dcLine21",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "62": {
+          "type": "button",
+          "name": "dcLine22",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "63": {
+          "type": "button",
+          "name": "dcLine23",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "64": {
+          "type": "button",
+          "name": "dcLine24",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "65": {
+          "type": "button",
+          "name": "dcLine25",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "66": {
+          "type": "button",
+          "name": "dcLine26",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "67": {
+          "type": "button",
+          "name": "dcLine27",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "68": {
+          "type": "button",
+          "name": "dcLine28",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        },
+        "69": {
+          "type": "button",
+          "name": "dcLine29",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "PrimaryText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyText": {
+                "value": "",
+                "type": "Text"
+              },
+              "FrequencyVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IconVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "ProgressVisible": {
+                "value": false,
+                "type": "Bool"
+              },
+              "IsPlaying": {
+                "value": false,
+                "type": "Bool"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
