@@ -77,6 +77,16 @@
       "requires": { "ida-remoteplay-video": "1.2.0", "ida-airplay-engine": "1.0.0" },
       "uninstallable": true,
       "mguHmi": ["ID8"]
+    },
+    {
+      "id": "ida_drlcolor",
+      "kind": "app",
+      "path": "packages/drlcolor/app",
+      "build": "unit",
+      "title": "DRL Colour",
+      "description": "Switches an aftermarket DRL colour module between yellow and white: flashes the high beams three times through the body controller, after learning once which lamp outputs they are. Optional Auto white at each engine start. Only with the car standing. EXPERIMENTAL, untested on a car.",
+      "uninstallable": true,
+      "mguHmi": ["ID8"]
     }
   ]
 }
