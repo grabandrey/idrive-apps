@@ -26,6 +26,7 @@
  *   <- {"ev":"pin","pin":"1234"}                      the PIN for the phone to type: show it now
  *   <- {"ev":"mirror","state":"started"|"paused"|"resumed"|"stopped","width","height","codec","reason"}
  *   <- {"ev":"conn","open":1}                         how many connections are open
+ *   <- {"ev":"net","how":"wlan0 192.168.1.1 fe80::1, ..."}  where the phone can find it (mdns_ifaces.c)
  *
  * Sound: not played (the car's audio is BMW's); the phone's sound goes nowhere while it mirrors.
  * Built by build.sh: static, musl, for x86_64 and aarch64.
@@ -51,7 +52,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define ENGINE_VERSION "1.0.0"
+#define ENGINE_VERSION "1.1.0"
 #define DEFAULT_RUN "/run/ida-airplay-engine"
 #define DEFAULT_DATA "/var/opt/ida-airplay-engine"
 #define MAX_LINE 65536
@@ -139,6 +140,17 @@ static struct {
 	size_t sps_pps_len;
 	volatile int reset_httpd;
 } S = { .vfd = -1 };
+
+/* where the phone can find the car, from mdns_ifaces.c */
+extern void (*ida_mdns_report)(const char *how);
+static char net_how[1024];
+static void on_mdns(const char *how)
+{
+	snprintf(net_how, sizeof(net_how), "%s", how);
+	plist_t o = ev_new("net");
+	set_str(o, "how", how);
+	emit(o);
+}
 
 static char hw_addr[6];
 static char device_id[18];
@@ -408,6 +420,7 @@ static void features(dnssd_t *d, int pin)
 
 static void receiver_stop(void)
 {
+	net_how[0] = 0;
 	if(S.dnssd) { dnssd_unregister_raop(S.dnssd); dnssd_unregister_airplay(S.dnssd); dnssd_destroy(S.dnssd); S.dnssd = NULL; }
 	if(S.raop) { raop_destroy(S.raop); S.raop = NULL; }
 	mirror_stopped("the receiver stopped");
@@ -548,6 +561,7 @@ static void handle(plist_t m)
 	{
 		plist_t o = plist_new_dict();
 		set_bool(o, "advertising", S.raop != NULL);
+		set_str(o, "network", net_how);
 		set_str(o, "name", S.name);
 		pthread_mutex_lock(&st_lock);
 		set_bool(o, "mirroring", S.mirroring);
@@ -582,6 +596,7 @@ int main(int argc, char **argv)
 	signal(SIGTERM, on_signal);
 	say("info", "AirPlay Engine %s starting", ENGINE_VERSION);
 	ntp_global_init();
+	ida_mdns_report = on_mdns;
 	load_identity();
 
 	int srv = socket(AF_UNIX, SOCK_STREAM, 0);

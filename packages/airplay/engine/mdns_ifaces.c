@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /*
- * AirPlay Engine: the mDNS responder behind UxPlay's lib/mdnsd/dnssd_mdnsd.c (the same mdnsd.h interface, in place
- * of lib/mdnsd/mdnsd.c). UxPlay's own answers on one interface only: the one the default route picks. A head unit
- * has several (its own internal networks, the car's hotspot, a phone's hotspot it joined), and the phone is rarely on
- * the default one. This one:
+ * AirPlay Engine: how the phone finds the car, behind UxPlay's lib/mdnsd/dnssd_mdnsd.c (the same mdnsd.h interface,
+ * in place of lib/mdnsd/mdnsd.c, which answers on one interface only: the one the default route picks).
  *
- *   - answers on every IPv4 interface that is up and multicast-capable, with that interface's own address in the
- *     A record (so a phone on the hotspot gets the hotspot address, not an internal one)
- *   - by default only on private networks (10/8, 172.16/12, 192.168/16): the head unit's internal vehicle networks
- *     (160.48.x.x and the like) are left alone. IDA_MDNS_IFACES=wlan0,ap0 names the interfaces instead; IDA_MDNS_ALL=1
- *     allows every interface
- *   - looks for new interfaces every 5 s (a hotspot that comes up later) and announces itself on them
+ * 1. The head unit's own Bonjour daemon, when it has one (wireless CarPlay runs on Apple's mDNSResponder): the two
+ *    services are registered with it over its socket (/var/run/mDNSResponder, /var/run/mdnsd, ...), the way
+ *    DNSServiceRegister does, so it announces them on every network it serves, the CarPlay Wi-Fi link included, over
+ *    IPv4 and IPv6, with its own host name. The registration lasts as long as the socket.
+ * 2. Otherwise its own responder: on every interface that is up (loopback aside), IPv4 (A records) and IPv6 (AAAA,
+ *    the link-local address: an iPhone on the car's Wi-Fi reaches it there), each with that interface's own address.
+ *    New interfaces are looked for every 5 s (a hotspot that comes up later) and announced on.
  *
- * IPv4 only: iPhones find AirPlay receivers over IPv4 on a hotspot. The record-building follows UxPlay's mdnsd.c.
+ * Settings (the engine's environment, /var/opt/ida-airplay-engine/env):
+ *   IDA_MDNS_IFACES=wlan0,uap0   only these interfaces (own responder)
+ *   IDA_MDNS_SKIP=eth0,eth1      not these
+ *   IDA_MDNS_SYSTEM=0            never the head unit's daemon; =1 only it
+ *   IDA_MDNS_SOCKET=/path        the daemon's socket, when it's somewhere else
+ *
+ * What it does is reported through ida_mdns_report (the engine passes it on to the app).
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -20,48 +25,65 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "mdnsd.h"
 
 #define MDNS_ADDR4 "224.0.0.251"
+#define MDNS_ADDR6 "ff02::fb"
 #define MDNS_PORT 5353
 #define MDNS_MAX_PACKET 1500
 #define MDNS_TTL_HOST 120
-#define MAX_IFACES 16
+#define MAX_IFACES 24
 #define SCAN_SECONDS 5
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
 #define DNS_TYPE_TXT 16
+#define DNS_TYPE_AAAA 28
 #define DNS_TYPE_SRV 33
 #define DNS_TYPE_ANY 255
 #define DNS_CLASS_IN 1
 #define DNS_CACHE_FLUSH 0x8000
 #define DNS_UNICAST_RESPONSE 0x8000
 
+/* the engine's: what the phone can find, in words (or NULL) */
+void (*ida_mdns_report)(const char *how) = NULL;
+
 typedef struct { unsigned char bytes[MDNS_MAX_PACKET]; size_t length; } packet_t;
-typedef struct { int index; uint32_t addr; char name[IF_NAMESIZE]; int seen; } iface_t;
+typedef struct {
+	int index;
+	char name[IF_NAMESIZE];
+	uint32_t addr4;          /* 0: none */
+	unsigned char addr6[16];
+	int has6, joined4, joined6, seen;
+} iface_t;
 
 struct mdnsd_s {
 	char host_name[MDNSD_MAX_NAME];
 	mdnsd_service_t airplay, raop;
 	iface_t ifaces[MAX_IFACES];
 	int n_ifaces;
-	int fd;
+	int fd4, fd6;
 	int running;
+	int system;              /* registered with the head unit's daemon */
+	int sys_fd[2];           /* its sockets: airplay, raop */
+	char sys_path[108];
 	pthread_t thread;
 	pthread_mutex_t mutex;
 	time_t scanned;
+	char report[1024];
 };
-
 
 static void note(const char *fmt, const char *a, const char *b)
 {
@@ -69,6 +91,31 @@ static void note(const char *fmt, const char *a, const char *b)
 	printf(fmt, a, b);
 	printf("\n");
 	fflush(stdout);
+}
+
+static void report(mdnsd_t *m)
+{
+	char r[1024];
+	if(m->system) snprintf(r, sizeof(r), "through the head unit's Bonjour (%s)", m->sys_path);
+	else
+	{
+		size_t o = 0;
+		r[0] = 0;
+		for(int i = 0; i < m->n_ifaces && o < sizeof(r) - 80; i++)
+		{
+			char a4[INET_ADDRSTRLEN] = "", a6[INET6_ADDRSTRLEN] = "";
+			iface_t *f = &m->ifaces[i];
+			if(f->addr4 && f->joined4) inet_ntop(AF_INET, &f->addr4, a4, sizeof(a4));
+			if(f->has6 && f->joined6) inet_ntop(AF_INET6, f->addr6, a6, sizeof(a6));
+			if(!a4[0] && !a6[0]) continue;
+			o += (size_t)snprintf(r + o, sizeof(r) - o, "%s%s %s%s%s", o ? ", " : "", f->name, a4, a4[0] && a6[0] ? " " : "", a6);
+		}
+		if(!o) snprintf(r, sizeof(r), "no network to announce on yet");
+	}
+	if(!strcmp(r, m->report)) return;
+	snprintf(m->report, sizeof(m->report), "%s", r);
+	note("announced %s%s", r, "");
+	if(ida_mdns_report) ida_mdns_report(r);
 }
 
 /* ---- packets ---- */
@@ -129,17 +176,17 @@ static int add_txt(packet_t *p, const char *name, const mdnsd_txt_t *txt, uint32
 	end_rr(p, at);
 	return 0;
 }
-static int add_a(packet_t *p, const char *name, uint32_t addr, uint32_t ttl)
+static int add_addr(packet_t *p, const char *name, int six, const void *addr, uint32_t ttl)
 {
 	size_t at;
-	if(begin_rr(p, name, DNS_TYPE_A, DNS_CLASS_IN | DNS_CACHE_FLUSH, ttl, &at) || put_bytes(p, &addr, 4)) return -1;
+	if(begin_rr(p, name, six ? DNS_TYPE_AAAA : DNS_TYPE_A, DNS_CLASS_IN | DNS_CACHE_FLUSH, ttl, &at) || put_bytes(p, addr, six ? 16 : 4)) return -1;
 	end_rr(p, at);
 	return 0;
 }
 
-/* one response: the services asked for (each: its type in the service list, its PTR, SRV, TXT) and the host's A
- * record with the address of the interface it goes out on. ttl 0: a goodbye. */
-static int build(mdnsd_t *m, packet_t *p, int airplay, int raop, int host, uint32_t addr, uint32_t ttl)
+/* one response: the services asked for (each: its type in the service list, its PTR, SRV, TXT) and the host's
+ * address on the interface it goes out on (A over IPv4, AAAA over IPv6). ttl 0: a goodbye. */
+static int build(mdnsd_t *m, packet_t *p, int airplay, int raop, int host, const iface_t *f, int six, uint32_t ttl)
 {
 	unsigned answers = 0;
 	p->length = 0;
@@ -153,9 +200,9 @@ static int build(mdnsd_t *m, packet_t *p, int airplay, int raop, int host, uint3
 			add_srv(p, s->name, s->port, m->host_name, ttl ? MDNS_TTL_HOST : 0) || add_txt(p, s->name, &s->txt, ttl)) return -1;
 		answers += 4;
 	}
-	if(host && addr)
+	if(host && (six ? f->has6 : f->addr4 != 0))
 	{
-		if(add_a(p, m->host_name, addr, ttl ? MDNS_TTL_HOST : 0)) return -1;
+		if(add_addr(p, m->host_name, six, six ? (const void *)f->addr6 : (const void *)&f->addr4, ttl ? MDNS_TTL_HOST : 0)) return -1;
 		answers++;
 	}
 	p->bytes[6] = (unsigned char)(answers >> 8);
@@ -164,60 +211,82 @@ static int build(mdnsd_t *m, packet_t *p, int airplay, int raop, int host, uint3
 }
 
 /* out on one interface: multicast (to NULL) or straight back to whoever asked */
-static void send_on(mdnsd_t *m, const iface_t *ifc, const packet_t *p, const struct sockaddr_in *to)
+static void send_on(mdnsd_t *m, const iface_t *f, int six, const packet_t *p, const void *to)
 {
-	struct sockaddr_in dst;
-	if(m->fd < 0 || !p->length) return;
-	if(to) dst = *to;
+	if(!p->length) return;
+	if(!six)
+	{
+		if(m->fd4 < 0) return;
+		struct sockaddr_in dst;
+		if(to) dst = *(const struct sockaddr_in *)to;
+		else
+		{
+			memset(&dst, 0, sizeof(dst));
+			dst.sin_family = AF_INET;
+			dst.sin_port = htons(MDNS_PORT);
+			inet_pton(AF_INET, MDNS_ADDR4, &dst.sin_addr);
+		}
+		struct ip_mreqn mr;
+		memset(&mr, 0, sizeof(mr));
+		mr.imr_ifindex = f->index;
+		mr.imr_address.s_addr = f->addr4;
+		setsockopt(m->fd4, IPPROTO_IP, IP_MULTICAST_IF, &mr, sizeof(mr));
+		sendto(m->fd4, p->bytes, p->length, 0, (struct sockaddr *)&dst, sizeof(dst));
+	}
 	else
 	{
-		memset(&dst, 0, sizeof(dst));
-		dst.sin_family = AF_INET;
-		dst.sin_port = htons(MDNS_PORT);
-		inet_pton(AF_INET, MDNS_ADDR4, &dst.sin_addr);
+		if(m->fd6 < 0) return;
+		struct sockaddr_in6 dst;
+		if(to) dst = *(const struct sockaddr_in6 *)to;
+		else
+		{
+			memset(&dst, 0, sizeof(dst));
+			dst.sin6_family = AF_INET6;
+			dst.sin6_port = htons(MDNS_PORT);
+			dst.sin6_scope_id = (uint32_t)f->index;
+			inet_pton(AF_INET6, MDNS_ADDR6, &dst.sin6_addr);
+		}
+		unsigned idx = (unsigned)f->index;
+		setsockopt(m->fd6, IPPROTO_IPV6, IPV6_MULTICAST_IF, &idx, sizeof(idx));
+		sendto(m->fd6, p->bytes, p->length, 0, (struct sockaddr *)&dst, sizeof(dst));
 	}
-	struct ip_mreqn mr;
-	memset(&mr, 0, sizeof(mr));
-	mr.imr_ifindex = ifc->index;
-	mr.imr_address.s_addr = ifc->addr;
-	setsockopt(m->fd, IPPROTO_IP, IP_MULTICAST_IF, &mr, sizeof(mr));
-	sendto(m->fd, p->bytes, p->length, 0, (struct sockaddr *)&dst, sizeof(dst));
 }
 
-static void respond(mdnsd_t *m, const iface_t *ifc, int airplay, int raop, int host, uint32_t ttl, const struct sockaddr_in *to)
+static void respond(mdnsd_t *m, const iface_t *f, int six, int airplay, int raop, int host, uint32_t ttl, const void *to)
 {
 	packet_t p;
-	if(airplay && raop && !build(m, &p, 1, 1, host, ifc->addr, ttl) && p.length <= 1200) { send_on(m, ifc, &p, to); return; }
-	if(airplay && !build(m, &p, 1, 0, host, ifc->addr, ttl)) send_on(m, ifc, &p, to);
-	if(raop && !build(m, &p, 0, 1, host, ifc->addr, ttl)) send_on(m, ifc, &p, to);
-	if(host && !airplay && !raop && !build(m, &p, 0, 0, 1, ifc->addr, ttl)) send_on(m, ifc, &p, to);
+	if(airplay && raop && !build(m, &p, 1, 1, host, f, six, ttl) && p.length <= 1200) { send_on(m, f, six, &p, to); return; }
+	if(airplay && !build(m, &p, 1, 0, host, f, six, ttl)) send_on(m, f, six, &p, to);
+	if(raop && !build(m, &p, 0, 1, host, f, six, ttl)) send_on(m, f, six, &p, to);
+	if(host && !airplay && !raop && !build(m, &p, 0, 0, 1, f, six, ttl)) send_on(m, f, six, &p, to);
+}
+
+static void respond_both(mdnsd_t *m, const iface_t *f, int airplay, int raop, int host, uint32_t ttl)
+{
+	if(f->joined4) respond(m, f, 0, airplay, raop, host, ttl, NULL);
+	if(f->joined6) respond(m, f, 1, airplay, raop, host, ttl, NULL);
 }
 
 /* ---- which interfaces ---- */
-static int private_v4(uint32_t a)
+static int in_list(const char *list, const char *name)
 {
-	uint32_t h = ntohl(a);
-	return (h >> 24) == 10 || (h >> 20) == ((172u << 4) | 1) || (h >> 16) == ((192u << 8) | 168);
-}
-static int allowed(const char *name, uint32_t addr)
-{
-	const char *list = getenv("IDA_MDNS_IFACES");
-	if(list && *list)
+	size_t n = strlen(name);
+	for(const char *s = list; s && *s; )
 	{
-		size_t n = strlen(name);
-		for(const char *s = list; *s; )
-		{
-			const char *e = strchr(s, ',');
-			size_t len = e ? (size_t)(e - s) : strlen(s);
-			if(len == n && !strncmp(s, name, n)) return 1;
-			if(!e) break;
-			s = e + 1;
-		}
-		return 0;
+		const char *e = strchr(s, ',');
+		size_t len = e ? (size_t)(e - s) : strlen(s);
+		if(len == n && !strncmp(s, name, n)) return 1;
+		if(!e) break;
+		s = e + 1;
 	}
-	const char *all = getenv("IDA_MDNS_ALL");
-	if(all && *all == '1') return 1;
-	return private_v4(addr);
+	return 0;
+}
+static int allowed(const char *name)
+{
+	const char *only = getenv("IDA_MDNS_IFACES"), *skip = getenv("IDA_MDNS_SKIP");
+	if(only && *only && !in_list(only, name)) return 0;
+	if(skip && *skip && in_list(skip, name)) return 0;
+	return 1;
 }
 
 /* new interfaces joined and announced, gone ones dropped. Called with the lock held. */
@@ -229,35 +298,32 @@ static void scan(mdnsd_t *m)
 	for(int i = 0; i < m->n_ifaces; i++) m->ifaces[i].seen = 0;
 	for(struct ifaddrs *a = list; a; a = a->ifa_next)
 	{
-		if(!a->ifa_addr || a->ifa_addr->sa_family != AF_INET || !(a->ifa_flags & IFF_UP) ||
-			!(a->ifa_flags & IFF_MULTICAST) || (a->ifa_flags & IFF_LOOPBACK)) continue;
-		uint32_t addr = ((struct sockaddr_in *)a->ifa_addr)->sin_addr.s_addr;
-		if(!allowed(a->ifa_name, addr)) continue;
-		int index = (int)if_nametoindex(a->ifa_name), found = -1;
-		for(int i = 0; i < m->n_ifaces; i++) if(m->ifaces[i].index == index) found = i;
-		if(found >= 0)
+		if(!a->ifa_addr || (a->ifa_addr->sa_family != AF_INET && a->ifa_addr->sa_family != AF_INET6) ||
+			!(a->ifa_flags & IFF_UP) || (a->ifa_flags & IFF_LOOPBACK) || !allowed(a->ifa_name)) continue;
+		int index = (int)if_nametoindex(a->ifa_name), k = -1;
+		if(!index) continue;
+		for(int i = 0; i < m->n_ifaces; i++) if(m->ifaces[i].index == index) k = i;
+		if(k < 0)
 		{
-			m->ifaces[found].seen = 1;
-			m->ifaces[found].addr = addr;
-			continue;
+			if(m->n_ifaces >= MAX_IFACES) continue;
+			k = m->n_ifaces++;
+			memset(&m->ifaces[k], 0, sizeof(iface_t));
+			m->ifaces[k].index = index;
+			snprintf(m->ifaces[k].name, sizeof(m->ifaces[k].name), "%s", a->ifa_name);
 		}
-		if(m->n_ifaces >= MAX_IFACES) continue;
-		struct ip_mreqn mr;
-		memset(&mr, 0, sizeof(mr));
-		inet_pton(AF_INET, MDNS_ADDR4, &mr.imr_multiaddr);
-		mr.imr_ifindex = index;
-		if(setsockopt(m->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mr, sizeof(mr)) == -1 && errno != EADDRINUSE)
+		iface_t *f = &m->ifaces[k];
+		f->seen = 1;
+		if(a->ifa_addr->sa_family == AF_INET) f->addr4 = ((struct sockaddr_in *)a->ifa_addr)->sin_addr.s_addr;
+		else
 		{
-			note("cannot listen on %s: %s", a->ifa_name, strerror(errno));
-			continue;
+			struct in6_addr *x = &((struct sockaddr_in6 *)a->ifa_addr)->sin6_addr;
+			/* the link-local address first: it's what a phone on the same Wi-Fi always reaches */
+			if(!f->has6 || (IN6_IS_ADDR_LINKLOCAL(x) && !IN6_IS_ADDR_LINKLOCAL((struct in6_addr *)f->addr6)))
+			{
+				memcpy(f->addr6, x, 16);
+				f->has6 = 1;
+			}
 		}
-		iface_t *n = &m->ifaces[m->n_ifaces++];
-		n->index = index; n->addr = addr; n->seen = 1;
-		snprintf(n->name, sizeof(n->name), "%s", a->ifa_name);
-		char ip[INET_ADDRSTRLEN];
-		inet_ntop(AF_INET, &addr, ip, sizeof(ip));
-		note("on %s (%s)", n->name, ip);
-		respond(m, n, 1, 1, 1, MDNSD_TTL_SERVICE, NULL);
 	}
 	freeifaddrs(list);
 	for(int i = 0; i < m->n_ifaces; )
@@ -266,6 +332,41 @@ static void scan(mdnsd_t *m)
 		note("%s gone%s", m->ifaces[i].name, "");
 		m->ifaces[i] = m->ifaces[--m->n_ifaces];
 	}
+	for(int i = 0; i < m->n_ifaces; i++)
+	{
+		iface_t *f = &m->ifaces[i];
+		int fresh = 0;
+		if(f->addr4 && !f->joined4 && m->fd4 >= 0)
+		{
+			struct ip_mreqn mr;
+			memset(&mr, 0, sizeof(mr));
+			inet_pton(AF_INET, MDNS_ADDR4, &mr.imr_multiaddr);
+			mr.imr_ifindex = f->index;
+			if(setsockopt(m->fd4, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mr, sizeof(mr)) == 0 || errno == EADDRINUSE) fresh = f->joined4 = 1;
+			else if(!f->joined4) { note("no IPv4 multicast on %s: %s", f->name, strerror(errno)); f->joined4 = -1; }
+		}
+		if(f->has6 && !f->joined6 && m->fd6 >= 0)
+		{
+			struct ipv6_mreq mr;
+			memset(&mr, 0, sizeof(mr));
+			inet_pton(AF_INET6, MDNS_ADDR6, &mr.ipv6mr_multiaddr);
+			mr.ipv6mr_interface = (unsigned)f->index;
+			if(setsockopt(m->fd6, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mr, sizeof(mr)) == 0 || errno == EADDRINUSE) fresh = f->joined6 = 1;
+			else if(!f->joined6) { note("no IPv6 multicast on %s: %s", f->name, strerror(errno)); f->joined6 = -1; }
+		}
+		if(fresh)
+		{
+			char a4[INET_ADDRSTRLEN] = "-", a6[INET6_ADDRSTRLEN] = "-";
+			if(f->addr4) inet_ntop(AF_INET, &f->addr4, a4, sizeof(a4));
+			if(f->has6) inet_ntop(AF_INET6, f->addr6, a6, sizeof(a6));
+			printf("[info] mdns: on %s (%s, %s)\n", f->name, a4, a6);
+			fflush(stdout);
+			iface_t on = *f;
+			on.joined4 = f->joined4 == 1; on.joined6 = f->joined6 == 1;
+			respond_both(m, &on, 1, 1, 1, MDNSD_TTL_SERVICE);
+		}
+	}
+	report(m);
 }
 
 /* ---- queries ---- */
@@ -305,7 +406,7 @@ static int read_name(const unsigned char *pk, size_t len, size_t *off, char *out
 static int same(const char *a, const char *b) { return !strcasecmp(a, b); }
 static int type_is(uint16_t t, uint16_t want) { return t == want || t == DNS_TYPE_ANY; }
 
-static void query(mdnsd_t *m, const iface_t *ifc, const unsigned char *b, size_t len, const struct sockaddr_in *from)
+static void query(mdnsd_t *m, const iface_t *f, int six, const unsigned char *b, size_t len, const void *from, uint16_t from_port)
 {
 	if(len < 12 || (rd16(b + 2) & 0x8000)) return;
 	unsigned qd = rd16(b + 4);
@@ -323,11 +424,41 @@ static void query(mdnsd_t *m, const iface_t *ifc, const unsigned char *b, size_t
 			(same(name, m->airplay.name) && (type_is(type, DNS_TYPE_SRV) || type_is(type, DNS_TYPE_TXT))))) { airplay = 1; host = 1; }
 		if(m->raop.registered && ((same(name, m->raop.type) && type_is(type, DNS_TYPE_PTR)) ||
 			(same(name, m->raop.name) && (type_is(type, DNS_TYPE_SRV) || type_is(type, DNS_TYPE_TXT))))) { raop = 1; host = 1; }
-		if(same(name, m->host_name) && type_is(type, DNS_TYPE_A)) host = 1;
+		if(same(name, m->host_name) && type_is(type, six ? DNS_TYPE_AAAA : DNS_TYPE_A)) host = 1;
 	}
 	if(!airplay && !raop && !host) return;
-	respond(m, ifc, airplay, raop, host, MDNSD_TTL_SERVICE, NULL);
-	if(unicast || from->sin_port != htons(MDNS_PORT)) respond(m, ifc, airplay, raop, host, MDNSD_TTL_SERVICE, from);
+	respond(m, f, six, airplay, raop, host, MDNSD_TTL_SERVICE, NULL);
+	if(unicast || from_port != htons(MDNS_PORT)) respond(m, f, six, airplay, raop, host, MDNSD_TTL_SERVICE, from);
+}
+
+static void receive(mdnsd_t *m, int fd, int six)
+{
+	unsigned char buf[MDNS_MAX_PACKET], ctl[256];
+	struct sockaddr_storage from;
+	struct iovec iov = { buf, sizeof(buf) };
+	struct msghdr msg;
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_name = &from; msg.msg_namelen = sizeof(from);
+	msg.msg_iov = &iov; msg.msg_iovlen = 1;
+	msg.msg_control = ctl; msg.msg_controllen = sizeof(ctl);
+	ssize_t n = recvmsg(fd, &msg, 0);
+	if(n <= 0) return;
+	int index = 0;
+	for(struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c))
+	{
+		if(!six && c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO) index = ((struct in_pktinfo *)CMSG_DATA(c))->ipi_ifindex;
+		if(six && c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_PKTINFO) index = (int)((struct in6_pktinfo *)CMSG_DATA(c))->ipi6_ifindex;
+	}
+	uint16_t port = six ? ((struct sockaddr_in6 *)&from)->sin6_port : ((struct sockaddr_in *)&from)->sin_port;
+	pthread_mutex_lock(&m->mutex);
+	for(int i = 0; i < m->n_ifaces; i++)
+		if(m->ifaces[i].index == index && (six ? m->ifaces[i].joined6 == 1 : m->ifaces[i].joined4 == 1))
+		{
+			iface_t f = m->ifaces[i];
+			query(m, &f, six, buf, (size_t)n, &from, port);
+			break;
+		}
+	pthread_mutex_unlock(&m->mutex);
 }
 
 static void *loop(void *arg)
@@ -336,36 +467,148 @@ static void *loop(void *arg)
 	for(;;)
 	{
 		pthread_mutex_lock(&m->mutex);
-		int fd = m->fd, run = m->running;
+		int fd4 = m->fd4, fd6 = m->fd6, run = m->running;
 		if(run && time(NULL) - m->scanned >= SCAN_SECONDS) scan(m);
 		pthread_mutex_unlock(&m->mutex);
-		if(!run || fd < 0) break;
-
-		fd_set rf;
-		FD_ZERO(&rf);
-		FD_SET(fd, &rf);
-		struct timeval tv = { 0, 250000 };
-		if(select(fd + 1, &rf, NULL, NULL, &tv) <= 0) continue;
-
-		unsigned char buf[MDNS_MAX_PACKET], ctl[256];
-		struct sockaddr_in from;
-		struct iovec iov = { buf, sizeof(buf) };
-		struct msghdr msg;
-		memset(&msg, 0, sizeof(msg));
-		msg.msg_name = &from; msg.msg_namelen = sizeof(from);
-		msg.msg_iov = &iov; msg.msg_iovlen = 1;
-		msg.msg_control = ctl; msg.msg_controllen = sizeof(ctl);
-		ssize_t n = recvmsg(fd, &msg, 0);
-		if(n <= 0) continue;
-		int index = 0;
-		for(struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c))
-			if(c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO) index = ((struct in_pktinfo *)CMSG_DATA(c))->ipi_ifindex;
-		pthread_mutex_lock(&m->mutex);
-		for(int i = 0; i < m->n_ifaces; i++)
-			if(m->ifaces[i].index == index) { iface_t ifc = m->ifaces[i]; query(m, &ifc, buf, (size_t)n, &from); break; }
-		pthread_mutex_unlock(&m->mutex);
+		if(!run) break;
+		struct pollfd p[2] = { { fd4, POLLIN, 0 }, { fd6, POLLIN, 0 } };
+		if(poll(p, 2, 250) <= 0) continue;
+		if(fd4 >= 0 && (p[0].revents & POLLIN)) receive(m, fd4, 0);
+		if(fd6 >= 0 && (p[1].revents & POLLIN)) receive(m, fd6, 1);
 	}
 	return NULL;
+}
+
+static int open4(void)
+{
+	int fd = socket(AF_INET, SOCK_DGRAM, 0), one = 1;
+	unsigned char ttl = 255, loopback = 1;
+	if(fd < 0) return -errno;
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+#ifdef SO_REUSEPORT
+	setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
+#endif
+	setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
+	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loopback, sizeof(loopback));
+	struct sockaddr_in a;
+	memset(&a, 0, sizeof(a));
+	a.sin_family = AF_INET;
+	a.sin_port = htons(MDNS_PORT);
+	a.sin_addr.s_addr = htonl(INADDR_ANY);
+	if(bind(fd, (struct sockaddr *)&a, sizeof(a)) == -1) { int e = errno; close(fd); return -e; }
+	return fd;
+}
+
+static int open6(void)
+{
+	int fd = socket(AF_INET6, SOCK_DGRAM, 0), one = 1, hops = 255;
+	if(fd < 0) return -errno;
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+#ifdef SO_REUSEPORT
+	setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
+#endif
+	setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
+	setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one));
+	setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, sizeof(hops));
+	setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &one, sizeof(one));
+	struct sockaddr_in6 a;
+	memset(&a, 0, sizeof(a));
+	a.sin6_family = AF_INET6;
+	a.sin6_port = htons(MDNS_PORT);
+	a.sin6_addr = in6addr_any;
+	if(bind(fd, (struct sockaddr *)&a, sizeof(a)) == -1) { int e = errno; close(fd); return -e; }
+	return fd;
+}
+
+/* ---- the head unit's own Bonjour daemon (Apple's mDNSResponder): DNSServiceRegister's request on its socket ---- */
+static const char *SYS_PATHS[] = { "/var/run/mDNSResponder", "/run/mDNSResponder", "/var/run/mdnsd", "/run/mdnsd",
+	"/var/run/mdnsd.sock", "/tmp/mdnsd", NULL };
+
+static const char *sys_path(void)
+{
+	const char *env = getenv("IDA_MDNS_SOCKET");
+	struct stat st;
+	if(env && *env) return env;
+	for(int i = 0; SYS_PATHS[i]; i++) if(stat(SYS_PATHS[i], &st) == 0 && S_ISSOCK(st.st_mode)) return SYS_PATHS[i];
+	return NULL;
+}
+
+static void p32(unsigned char **p, uint32_t v) { (*p)[0] = (unsigned char)(v >> 24); (*p)[1] = (unsigned char)(v >> 16); (*p)[2] = (unsigned char)(v >> 8); (*p)[3] = (unsigned char)v; *p += 4; }
+static void pstr(unsigned char **p, const char *s) { size_t n = strlen(s) + 1; memcpy(*p, s, n); *p += n; }
+
+/* "iDrive._airplay._tcp.local" of type "_airplay._tcp.local" -> name "iDrive", type "_airplay._tcp" */
+static int split_service(const mdnsd_service_t *s, char *name, size_t nl, char *type, size_t tl)
+{
+	size_t n = strlen(s->name), t = strlen(s->type);
+	if(n <= t + 1 || strcasecmp(s->name + n - t, s->type) || s->name[n - t - 1] != '.') return -1;
+	snprintf(name, nl, "%.*s", (int)(n - t - 1), s->name);
+	snprintf(type, tl, "%s", s->type);
+	char *local = strstr(type, ".local");
+	if(local && !local[6]) *local = 0;
+	return 0;
+}
+
+/* one registration: its own connection, kept open (closing it deregisters). -> the socket, or -1 */
+static int sys_register(const char *path, const mdnsd_service_t *s)
+{
+	char name[MDNSD_MAX_NAME], type[MDNSD_MAX_NAME];
+	if(split_service(s, name, sizeof(name), type, sizeof(type))) return -1;
+	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	struct sockaddr_un a;
+	memset(&a, 0, sizeof(a));
+	a.sun_family = AF_UNIX;
+	snprintf(a.sun_path, sizeof(a.sun_path), "%s", path);
+	if(fd < 0 || connect(fd, (struct sockaddr *)&a, sizeof(a)) < 0) { if(fd >= 0) close(fd); return -1; }
+	struct timeval tv = { 3, 0 };
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	unsigned char msg[28 + 8 + 3 * MDNSD_MAX_NAME + 8 + MDNSD_TXT_MAX], *p = msg + 28;
+	p32(&p, 0);                       /* flags */
+	p32(&p, 0);                       /* every interface */
+	pstr(&p, name);
+	pstr(&p, type);
+	pstr(&p, "");                     /* domain: local */
+	pstr(&p, "");                     /* host: the daemon's own */
+	*p++ = (unsigned char)(s->port >> 8); *p++ = (unsigned char)s->port;
+	*p++ = (unsigned char)(s->txt.length >> 8); *p++ = (unsigned char)s->txt.length;
+	memcpy(p, s->txt.bytes, (size_t)s->txt.length); p += s->txt.length;
+	uint32_t datalen = (uint32_t)(p - msg - 28);
+	unsigned char *h = msg;
+	p32(&h, 1);                       /* version */
+	p32(&h, datalen);
+	p32(&h, 0);                       /* ipc_flags */
+	p32(&h, 5);                       /* reg_service_request */
+	p32(&h, 0x69646101); p32(&h, 0);  /* client context */
+	p32(&h, 0);                       /* reg_index */
+	size_t len = (size_t)(p - msg), off = 0;
+	while(off < len) { ssize_t w = write(fd, msg + off, len - off); if(w <= 0) { close(fd); return -1; } off += (size_t)w; }
+	unsigned char e[4];
+	size_t got = 0;
+	while(got < 4) { ssize_t r = read(fd, e + got, 4 - got); if(r <= 0) { close(fd); return -1; } got += (size_t)r; }
+	int32_t err = (int32_t)(((uint32_t)e[0] << 24) | ((uint32_t)e[1] << 16) | ((uint32_t)e[2] << 8) | e[3]);
+	if(err) { char b[32]; snprintf(b, sizeof(b), "%d", err); note("the head unit's Bonjour refused %s: error %s", name, b); close(fd); return -1; }
+	note("registered %s with the head unit's Bonjour (%s)", s->name, path);
+	return fd;
+}
+
+/* the services not registered yet, registered; -> 0 when every registered service is */
+static int sys_sync(mdnsd_t *m)
+{
+	const mdnsd_service_t *s[2] = { &m->airplay, &m->raop };
+	int bad = 0;
+	for(int i = 0; i < 2; i++)
+	{
+		if(!s[i]->registered) { if(m->sys_fd[i] >= 0) { close(m->sys_fd[i]); m->sys_fd[i] = -1; } continue; }
+		if(m->sys_fd[i] < 0) m->sys_fd[i] = sys_register(m->sys_path, s[i]);
+		if(m->sys_fd[i] < 0) bad = 1;
+	}
+	return bad ? -1 : 0;
+}
+
+static void sys_close(mdnsd_t *m)
+{
+	for(int i = 0; i < 2; i++) if(m->sys_fd[i] >= 0) { close(m->sys_fd[i]); m->sys_fd[i] = -1; }
+	m->system = 0;
 }
 
 /* ---- mdnsd.h ---- */
@@ -385,7 +628,8 @@ mdnsd_t *mdnsd_init(const char *host_name)
 	mdnsd_t *m = calloc(1, sizeof(*m));
 	if(!m) return NULL;
 	snprintf(m->host_name, sizeof(m->host_name), "%s", host_name && *host_name ? host_name : "idrive-airplay.local");
-	m->fd = -1;
+	m->fd4 = m->fd6 = -1;
+	m->sys_fd[0] = m->sys_fd[1] = -1;
 	pthread_mutex_init(&m->mutex, NULL);
 	return m;
 }
@@ -402,37 +646,35 @@ int mdnsd_start(mdnsd_t *m)
 {
 	if(!m) return -1;
 	pthread_mutex_lock(&m->mutex);
+	if(m->system) { int r = sys_sync(m); pthread_mutex_unlock(&m->mutex); return r; }
 	if(m->running) { pthread_mutex_unlock(&m->mutex); return 0; }
-	int fd = socket(AF_INET, SOCK_DGRAM, 0), one = 1;
-	unsigned char ttl = 255, loopback = 1;
-	if(fd < 0) { pthread_mutex_unlock(&m->mutex); return -errno; }
-	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-#ifdef SO_REUSEPORT
-	setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
-#endif
-	setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
-	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
-	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loopback, sizeof(loopback));
-	struct sockaddr_in a;
-	memset(&a, 0, sizeof(a));
-	a.sin_family = AF_INET;
-	a.sin_port = htons(MDNS_PORT);
-	a.sin_addr.s_addr = htonl(INADDR_ANY);
-	if(bind(fd, (struct sockaddr *)&a, sizeof(a)) == -1)
+	const char *mode = getenv("IDA_MDNS_SYSTEM"), *path = mode && *mode == '0' ? NULL : sys_path();
+	if(path)
 	{
-		int e = errno;
-		close(fd);
-		pthread_mutex_unlock(&m->mutex);
-		return -e;
+		snprintf(m->sys_path, sizeof(m->sys_path), "%s", path);
+		if(!sys_sync(m)) { m->system = 1; report(m); pthread_mutex_unlock(&m->mutex); return 0; }
+		sys_close(m);
+		note("the head unit's Bonjour (%s) did not take the services: answering on my own%s", path, "");
 	}
-	m->fd = fd;
+	if(mode && *mode == '1') { pthread_mutex_unlock(&m->mutex); return -1; }
+	int fd4 = open4(), fd6 = open6();
+	if(fd4 < 0 && fd6 < 0)
+	{
+		note("cannot listen on UDP 5353: %s%s", strerror(-fd4), "");
+		pthread_mutex_unlock(&m->mutex);
+		return fd4;
+	}
+	m->fd4 = fd4 < 0 ? -1 : fd4;
+	m->fd6 = fd6 < 0 ? -1 : fd6;
 	m->n_ifaces = 0;
+	m->report[0] = 0;
 	m->running = 1;
 	scan(m);
 	if(pthread_create(&m->thread, NULL, loop, m))
 	{
-		close(fd);
-		m->fd = -1;
+		if(m->fd4 >= 0) close(m->fd4);
+		if(m->fd6 >= 0) close(m->fd6);
+		m->fd4 = m->fd6 = -1;
 		m->running = 0;
 		pthread_mutex_unlock(&m->mutex);
 		return -1;
@@ -445,14 +687,16 @@ void mdnsd_stop(mdnsd_t *m)
 {
 	if(!m) return;
 	pthread_mutex_lock(&m->mutex);
+	sys_close(m);
 	if(!m->running) { pthread_mutex_unlock(&m->mutex); return; }
 	m->running = 0;
 	pthread_t t = m->thread;
 	pthread_mutex_unlock(&m->mutex);
 	pthread_join(t, NULL);
 	pthread_mutex_lock(&m->mutex);
-	if(m->fd >= 0) close(m->fd);
-	m->fd = -1;
+	if(m->fd4 >= 0) close(m->fd4);
+	if(m->fd6 >= 0) close(m->fd6);
+	m->fd4 = m->fd6 = -1;
 	m->n_ifaces = 0;
 	pthread_mutex_unlock(&m->mutex);
 }
@@ -463,6 +707,7 @@ void mdnsd_set_services(mdnsd_t *m, const mdnsd_service_t *airplay, const mdnsd_
 	pthread_mutex_lock(&m->mutex);
 	if(airplay) m->airplay = *airplay; else memset(&m->airplay, 0, sizeof(m->airplay));
 	if(raop) m->raop = *raop; else memset(&m->raop, 0, sizeof(m->raop));
+	if(m->system) sys_sync(m);
 	pthread_mutex_unlock(&m->mutex);
 }
 
@@ -470,7 +715,7 @@ void mdnsd_announce(mdnsd_t *m, uint32_t ttl)
 {
 	if(!m) return;
 	pthread_mutex_lock(&m->mutex);
-	for(int i = 0; i < m->n_ifaces; i++) respond(m, &m->ifaces[i], 1, 1, 1, ttl, NULL);
+	if(!m->system) for(int i = 0; i < m->n_ifaces; i++) respond_both(m, &m->ifaces[i], 1, 1, 1, ttl);
 	pthread_mutex_unlock(&m->mutex);
 }
 
@@ -478,10 +723,16 @@ void mdnsd_goodbye(mdnsd_t *m, const mdnsd_service_t *service)
 {
 	if(!m || !service || !service->registered) return;
 	pthread_mutex_lock(&m->mutex);
+	if(m->system) { pthread_mutex_unlock(&m->mutex); return; }      /* set_services closes its registration */
 	mdnsd_service_t keep_a = m->airplay, keep_r = m->raop;
 	int is_airplay = !strcmp(service->type, keep_a.type);
 	if(is_airplay) m->airplay = *service; else m->raop = *service;
-	for(int i = 0; i < m->n_ifaces; i++) respond(m, &m->ifaces[i], is_airplay, !is_airplay, 0, 0, NULL);
+	for(int i = 0; i < m->n_ifaces; i++)
+	{
+		iface_t f = m->ifaces[i];
+		f.joined4 = f.joined4 == 1; f.joined6 = f.joined6 == 1;
+		respond_both(m, &f, is_airplay, !is_airplay, 0, 0);
+	}
 	m->airplay = keep_a; m->raop = keep_r;
 	pthread_mutex_unlock(&m->mutex);
 }

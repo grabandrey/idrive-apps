@@ -181,7 +181,7 @@ class AirPlayApp extends OnlineApp {
         });
         e.on('lost', () => {
             this._engineInfo = null;
-            this._receiver.on = false; this._receiver.busy = false;
+            this._receiver.on = false; this._receiver.busy = false; this._receiver.net = null;
             this._phone = null; this._pin = null;
             if (this._view === 'mirror') this._endMirror('the AirPlay engine went away');
             this._dirty = true;
@@ -198,6 +198,11 @@ class AirPlayApp extends OnlineApp {
             this._dirty = true;
         });
         e.on('mirror', (m) => this._mirrorEvent(m));
+        e.on('net', (m) => {
+            this._receiver.net = m.how || null;
+            if (m.how) logger.info('the phone finds the car ' + (/Bonjour/.test(m.how) ? m.how : 'on ' + m.how));
+            this._dirty = true;
+        });
         e.on('conn', (m) => { if (!m.open && this._phone && this._view !== 'mirror') { this._phone.state = 'disconnected'; this._dirty = true; } });
         v.connect();
         e.connect();
@@ -281,7 +286,7 @@ class AirPlayApp extends OnlineApp {
         } else if (!want && r.on) {
             r.busy = true;
             this._engine.ask({ op: 'stop' }, 8000).catch((err) => logger.warn('receiver stop: ' + err.message)).then(() => {
-                r.on = false; r.busy = false; this._pin = null;
+                r.on = false; r.busy = false; r.net = null; this._pin = null;
                 logger.info('receiver off');
                 this._dirty = true;
             });

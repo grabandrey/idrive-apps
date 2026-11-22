@@ -203,7 +203,7 @@ function home(rec, m, targets) {
     rec.rrect(S.x, S.y, S.w, S.h, 28, C.card);
     const col = (i) => S.x + 50 + i * 800, line = (j) => S.y + 60 + j * 120;
     const e = m.engine, r = m.receiver || {};
-    const rtext = !e ? 'AirPlay Engine not installed' : !m.enabled ? 'Off' : r.on ? '"' + r.name + '"' + (m.addresses && m.addresses.length ? '  ·  ' + m.addresses.join(', ') : '') :
+    const rtext = !e ? 'AirPlay Engine not installed' : !m.enabled ? 'Off' : r.on ? '"' + r.name + '"  ·  ' + (r.net ? (/Bonjour/.test(r.net) ? 'through the car\'s Bonjour' : r.net) : m.addresses && m.addresses.length ? m.addresses.join(', ') : 'no network yet') :
         r.error ? r.error : m.parked !== true ? 'Waits until the car is parked' : 'Starting...';
     row(rec, col(0), line(0), 760, 'Receiver', rtext, !e || r.error ? 'bad' : r.on ? 'ok' : m.enabled ? 'warn' : 'none');
     const p = m.phone;

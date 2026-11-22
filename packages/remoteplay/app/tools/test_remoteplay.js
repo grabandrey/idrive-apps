@@ -443,6 +443,38 @@ test('video tool: a new shape while the stream plays (again from the keyframe)',
         .then(() => { ctl.destroy(); tool.kill(); }, (e) => { tool.kill(); throw e; });
 });
 
+test('video tool: GStreamer in a vendor\'s own folder is found and used', () => {
+    const cp = require('child_process'), net = require('net');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpv-gst-'));
+    const vendor = path.join(dir, 'opt', 'vendor', 'lib');
+    fs.mkdirSync(path.join(vendor, 'gstreamer-1.0'), { recursive: true });
+    fs.writeFileSync(path.join(vendor, 'libgstreamer-1.0.so.0'), '');
+    fs.writeFileSync(path.join(vendor, 'libgstreamer-1.0.so.0.1603.0'), '');
+    const found = video.findGst([path.join(dir, 'opt')]);
+    eq(found.libs[0], path.join(vendor, 'libgstreamer-1.0.so.0'), 'the library, wherever it is');
+    const env = video.gstEnvFor(found.libs[0]);
+    eq([env.IDA_GST_LIB, env.LD_LIBRARY_PATH.split(':')[0], env.GST_PLUGIN_SYSTEM_PATH_1_0], [found.libs[0], vendor, path.join(vendor, 'gstreamer-1.0')], 'its folder and plugins');
+    // a launcher that finds GStreamer only when told where it is
+    const fake = path.join(dir, 'ida-gst');
+    fs.writeFileSync(fake, '#!/bin/sh\nif [ -z "$IDA_GST_LIB" ]; then echo "ERROR: no GStreamer library (libgstreamer-1.0.so.0) on this head unit: not found"; exit 2; fi\n' +
+        'if [ "$1" = probe ]; then printf "version 1.16.3\\nelement\\tvaapih264dec\\t256\\tCodec/Decoder/Video/Hardware\\nelement\\twaylandsink\\t0\\tSink/Video\\n"; exit 0; fi\nexit 0\n');
+    fs.chmodSync(fake, 0o755);
+    const run = path.join(dir, 'run');
+    fs.mkdirSync(run);
+    const tool = cp.spawn(process.execPath, [path.join(TOOL, 'video.js')], { env: Object.assign({}, process.env, { RPV_RUN: run, RPV_DATA: run, RPV_LAUNCHER: fake, RPV_SEARCH: path.join(dir, 'opt') }), stdio: 'ignore' });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = (f) => { const t0 = Date.now(); const go = () => (f() ? Promise.resolve() : Date.now() - t0 > 8000 ? Promise.reject(new Error('timed out')) : wait(50).then(go)); return go(); };
+    let out = '';
+    return until(() => fs.existsSync(path.join(run, 'ctl.sock')))
+        .then(() => new Promise((r) => { const c = net.createConnection(path.join(run, 'ctl.sock'), () => c.write('{"id":1,"op":"probe"}\n')); c.on('data', (d) => { out += d; if (/"id":1/.test(out)) { c.destroy(); r(); } }); }))
+        .then(() => {
+            const p = JSON.parse(out.split('\n').filter((l) => /"id":1/.test(l))[0]);
+            eq([p.gst, p.decoders.h264, p.sink], ['1.16.3', 'vaapih264dec', 'waylandsink'], 'used: the vendor\'s GStreamer');
+            ok(/libgstreamer-1\.0\.so\.0/.test(p.via), 'it says which (' + p.via + ')');
+            tool.kill();
+        }, (e) => { tool.kill(); throw e; });
+});
+
 /* ---- the gamepad ---- */
 const gp = require(path.join(TOOL, 'gamepad.js'));
 test('gamepad: found in the input devices, read from its events', () => {

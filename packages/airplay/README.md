@@ -37,9 +37,10 @@ iPhone ──AirPlay (Wi-Fi)──▶ ida-airplay-engine ──H.264──▶ id
 1. In MGU Store, add the source `grabandrey/idrive-apps` (branch `main`) if you haven't, and install **AirPlay**
    (`ida_airplay`, which installs **AirPlay Engine** and **Remote Play Video** first). For the drawn screens, also
    install **Renderer** (`mgu-render`) from MGU Store's own source.
-2. Put the phone and the car on the same Wi-Fi: the phone on the **car's hotspot**, or the car on the **phone's
-   hotspot**.
-3. Park, and open **AirPlay** on the car. The Receiver row says `"iDrive" · 192.168.x.x` when it's ready.
+2. Put the phone and the car on the same Wi-Fi: the car's Wi-Fi (the one wireless CarPlay uses works), the **car's
+   hotspot**, or the car on the **phone's hotspot**.
+3. Park, and open **AirPlay** on the car, and keep it open: the receiver is on only while the app is on the screen.
+   The Receiver row says `"iDrive" · through the car's Bonjour` (or the networks it announces on) when it's ready.
 4. On the phone: **Control Center > Screen Mirroring > iDrive**. The first time, the car shows a 4-digit PIN:
    type it on the phone. The car remembers the phone after that.
 5. The phone's screen fills the screen right of the band. Pick its shape in the band; **Disconnect** drops the phone.
@@ -80,11 +81,17 @@ engine's JSON) and OpenSSL's libcrypto. Each frame (H.264, Annex B) goes to the 
 app's place and shape in the header line.
 
 **Finding the car.** UxPlay's own mDNS responder answers on one interface, the one the default route uses. A head unit
-has several, and the phone is rarely on the default one. So `mdns_ifaces.c` takes its place (same interface): it
-answers on **every private IPv4 network** (10/8, 172.16/12, 192.168/16) with that network's own address, and looks
-for new ones every 5 s (a hotspot that comes up later). The car's internal vehicle networks are left alone.
-`/var/opt/ida-airplay-engine/env` can change that: `IDA_MDNS_IFACES=wlan0,ap0` names the interfaces, `IDA_MDNS_ALL=1`
-allows every one.
+has several, and the phone is rarely on the default one. So `mdns_ifaces.c` takes its place (same interface):
+
+1. When the head unit runs Apple's Bonjour daemon (mDNSResponder: wireless CarPlay runs on it), the receiver is
+   registered with it, over its socket, the way `DNSServiceRegister` does. The daemon then announces it on every
+   network it serves, the CarPlay Wi-Fi link included, over IPv4 and IPv6.
+2. Otherwise it answers itself, on **every interface** that's up, over **IPv4 and IPv6** (the link-local address: what
+   an iPhone on the car's Wi-Fi reaches), each with that interface's own address, and looks for new interfaces every
+   5 s (a hotspot that comes up later).
+
+`/var/opt/ida-airplay-engine/env` can change that: `IDA_MDNS_IFACES=wlan0,uap0` (only these), `IDA_MDNS_SKIP=eth0`
+(not these), `IDA_MDNS_SYSTEM=0` (never the head unit's daemon), `IDA_MDNS_SOCKET=/path` (its socket, elsewhere).
 
 The phone is told the screen is 1920x1080 at up to 60 fps. It sends its own shape inside that.
 
@@ -125,9 +132,14 @@ stream's shape.
   identity (`id`, `airplay.pem`) and the phones that typed the PIN (`clients.txt`) are in `/var/opt/ida-airplay-engine/`.
 - Video tool: see [Remote Play](../remoteplay/README.md#settings-and-logs).
 
-**If the phone doesn't list "iDrive"**: check the engine's log for `mdns: on <interface> (<address>)` lines. None
-means no private network was found: name the interface in `env`. If it's listed but won't connect, the head unit's
-firewall may block incoming connections on that network.
+**If the phone doesn't list "iDrive"** under Screen Mirroring:
+
+- The app must be open on the car's screen, the car parked, and the receiver on. The Logs screen says
+  `receiver on: "iDrive"` and `the phone finds the car ...` (through the car's Bonjour, or which networks).
+- With wireless CarPlay on, the phone's Wi-Fi link to the car is CarPlay's. If "iDrive" still doesn't show, try the
+  car on the phone's hotspot instead (CarPlay off for that phone, or over USB).
+- `journalctl -u ida-airplay-engine` has each network it announces on (`mdns: on wlan0 (...)`) or the Bonjour daemon
+  it registered with. If it's listed but won't connect, the head unit's firewall may be blocking it.
 
 ## Package layout
 

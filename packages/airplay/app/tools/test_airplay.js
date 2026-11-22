@@ -212,6 +212,72 @@ test('engine: the real program answers the app, announces itself, answers a phon
         .then(() => { l.close(); proc.kill(); }, (e) => { l.close(); proc.kill(); e.message += '\nengine log:\n' + out; throw e; });
 });
 
+/* a stand-in for the head unit's Bonjour daemon (Apple's mDNSResponder): reads a request the way its uds_daemon.c
+ * does (the 28-byte header in network order, then flags, interface, name, type, domain, host, port, TXT) and answers
+ * with a 4-byte error code on the same socket */
+function fakeDaemon(sockPath, error) {
+    const got = [];
+    const srv = net.createServer((c) => {
+        let buf = Buffer.alloc(0);
+        c.on('data', (d) => {
+            buf = Buffer.concat([buf, d]);
+            if (buf.length < 28 || buf.length < 28 + buf.readUInt32BE(4)) return;
+            const h = { version: buf.readUInt32BE(0), datalen: buf.readUInt32BE(4), flags: buf.readUInt32BE(8), op: buf.readUInt32BE(12) };
+            let o = 28;
+            const u32 = () => { const v = buf.readUInt32BE(o); o += 4; return v; };
+            const str = () => { const e = buf.indexOf(0, o); const v = buf.slice(o, e).toString(); o = e + 1; return v; };
+            const r = Object.assign(h, { svcFlags: u32(), iface: u32(), name: str(), type: str(), domain: str(), host: str() });
+            r.port = buf.readUInt16BE(o); o += 2;
+            const tl = buf.readUInt16BE(o); o += 2;
+            r.txt = buf.slice(o, o + tl).toString('latin1'); o += tl;
+            r.rest = buf.length - o;
+            got.push(r);
+            const e = Buffer.alloc(4); e.writeInt32BE(error || 0, 0); c.write(e);
+            buf = Buffer.alloc(0);
+            c.on('close', () => { r.closed = true; });
+        });
+    }).listen(sockPath);
+    return { srv: srv, got: got };
+}
+
+test('engine: through the head unit\'s Bonjour when it has one (as wireless CarPlay does), its own otherwise', () => {
+    if (process.arch !== 'x64' || process.platform !== 'linux') return;
+    const run = (env, daemonError) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-bonjour-'));
+        const d = fakeDaemon(path.join(dir, 'mdnsd'), daemonError);
+        const proc = cp.spawn(path.join(ENGINE, 'bin/x86_64/ida-airplay-engine'), [path.join(dir, 'run'), path.join(dir, 'data')],
+            { stdio: 'ignore', env: Object.assign({}, process.env, { IDA_MDNS_SOCKET: path.join(dir, 'mdnsd') }, env) });
+        const sock = path.join(dir, 'run', 'engine.sock');
+        const l = new links.JsonLink('AirPlay engine', sock, log, { retryMs: 50, timeoutMs: 10000 });
+        const nets = [];
+        l.on('net', (m) => nets.push(m.how));
+        const done = (v) => { l.close(); proc.kill(); d.srv.close(); return v; };
+        return until(() => links.isSocket(sock), 5000, 'socket')
+            .then(() => { l.connect(); return until(() => l.ready, 5000, 'connection'); })
+            .then(() => l.ask({ op: 'start', name: 'iDrive', access: 'pin', video: {} }))
+            .then(() => wait(300))
+            .then(() => l.ask({ op: 'status' }))
+            .then((st) => ({ got: d.got, nets: nets, status: st }))
+            .then(done, (e) => { done(); throw e; });
+    };
+    return run({}, 0).then((r) => {
+        eq(r.got.length, 2, 'both services registered with the daemon');
+        const air = r.got.filter((g) => g.type === '_airplay._tcp')[0], raop = r.got.filter((g) => g.type === '_raop._tcp')[0];
+        ok(air && raop, 'as _airplay._tcp and _raop._tcp');
+        eq([air.version, air.op, air.flags, air.datalen + 28 - air.rest > 0], [1, 5, 0, true], 'version 1, reg_service_request, no flags');
+        eq([air.name, air.domain, air.host, air.iface, air.rest], ['iDrive', '', '', 0, 0], 'its name, every interface, the daemon\'s host, nothing left over');
+        ok(/^[0-9A-F]{12}@iDrive$/.test(raop.name), 'the raop name: the id @ the name');
+        ok(air.port === r.status.port || air.port > 0, 'its port');
+        ok(/deviceid=/.test(air.txt) && /features=0x/.test(air.txt) && /pw=true/.test(air.txt), 'its TXT record');
+        ok(/head unit's Bonjour/.test(r.status.network) && r.nets.some((n) => /head unit's Bonjour/.test(n)), 'the app hears how');
+        return run({}, -65548);
+    }).then((r) => {
+        ok(r.got.length >= 1, 'asked the daemon');
+        ok(!/Bonjour/.test(r.status.network) && r.status.advertising, 'refused: its own responder instead (' + r.status.network + ')');
+        return run({ IDA_MDNS_SYSTEM: '0' }, 0);
+    }).then((r) => eq(r.got.length, 0, 'IDA_MDNS_SYSTEM=0: the daemon left alone'));
+});
+
 /* run them in order */
 tests.reduce((p, t) => p.then(() => Promise.resolve().then(t[1]).catch((e) => { e.message = t[0] + ': ' + e.message; throw e; })), Promise.resolve())
     .then(() => { console.log(n + ' checks passed'); process.exit(0); },
