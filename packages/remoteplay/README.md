@@ -161,6 +161,10 @@ channel, and Remote Play sessions.
   `remoteplay.log`, in the first writable folder of the app's home, its working folder and the temp folder. The
   **Logs** screen shows the same lines, as does the head unit's log (`RMPL`).
 - Engine: its log is in the journal (`journalctl -u ida-remoteplay-engine`): pairing, the session, and why it ended.
+- Video tool: GStreamer is found wherever the head unit keeps it (1.3.0): when the usual places have no
+  `libgstreamer-1.0`, the head unit's folders (`/opt`, `/usr/lib/...`, ...) are searched, the library found is used
+  with its own folder and plugins, and ida-gst goes through the head unit's own loader if it must. `probe.txt` has what
+  was found (`search`); the Home screen says why when nothing works.
 - Video tool: the stream header's `"aspect"` (`fit`, `stretch`, `16:9`, `4:3`, ... ) and `{"op":"view","aspect"}` set a
   stream's shape (1.2.0; [AirPlay](../airplay/README.md#the-pictures-shape) uses them). Without it, the picture goes
   in `rect` as before.

@@ -1,7 +1,7 @@
 {
   "id": "ida-airplay-engine",
   "kind": "tool",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "AirPlay Engine",
   "description": "The AirPlay receiver for the AirPlay app: announces the car to iPhones and iPads on the car's networks, pairs with them (a PIN on the car's screen the first time), and passes their mirrored screen to Remote Play Video, which decodes it in hardware. Built on UxPlay's AirPlay library (GPL-3.0); its source and build script are installed with it. EXPERIMENTAL, untested on a car.",
   "optional": true,

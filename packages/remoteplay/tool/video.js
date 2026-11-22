@@ -34,7 +34,7 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { Gamepads } = require('./gamepad.js');
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const RUN = process.env.RPV_RUN || '/run/ida-remoteplay-video';
 const CTL = path.join(RUN, 'ctl.sock');
 const STREAM = path.join(RUN, 'stream.sock');
@@ -77,9 +77,63 @@ function which(name) {
     return null;
 }
 
+/* where the head unit's GStreamer is, when it isn't where a library is normally looked for (findGst): its folder in
+ * LD_LIBRARY_PATH, its plugins, and the library itself for ida-gst (IDA_GST_LIB) */
+const GST_ENV = {};
+
+/* the head unit's GStreamer, wherever it is: a vendor's own folder (/opt/..., /usr/lib/<vendor>/...) is common.
+ * -> { libs: [libgstreamer-1.0.so*], old: [0.10 libraries], launch: [gst-launch-1.0], inspect: [..], loaders: [ld-linux*.so*] } */
+const SEARCH_ROOTS = ['/usr/lib', '/usr/lib64', '/lib', '/lib64', '/usr/local', '/opt', '/usr/bin', '/usr/sbin', '/bin', '/apps', '/system', '/vendor', '/usr/share/gstreamer-1.0', '/var/opt', '/mnt'];
+function findGst(roots, o) {
+    o = o || {};
+    const maxDepth = o.maxDepth || 6, budget = { left: o.maxEntries || 60000 };
+    const out = { libs: [], old: [], launch: [], inspect: [], loaders: [] };
+    const seen = new Set();
+    const walk = (dir, depth) => {
+        if (depth > maxDepth || budget.left <= 0) return;
+        let real;
+        try { real = fs.realpathSync(dir); } catch (e) { return; }
+        if (seen.has(real) || /^\/(proc|sys|dev|run)(\/|$)/.test(real) || /\/(ida-remoteplay-video|ida-airplay-engine|ida-remoteplay-engine)(\/|$)/.test(real)) return;
+        seen.add(real);
+        let list;
+        try { list = fs.readdirSync(dir); } catch (e) { return; }
+        budget.left -= list.length;
+        list.forEach((f) => {
+            const p = path.join(dir, f);
+            if (/^libgstreamer-1\.0\.so/.test(f)) out.libs.push(p);
+            else if (/^libgstreamer-0\.10\.so/.test(f)) out.old.push(p);
+            else if (f === 'gst-launch-1.0') out.launch.push(p);
+            else if (f === 'gst-inspect-1.0') out.inspect.push(p);
+            else if (/^ld-linux.*\.so/.test(f)) out.loaders.push(p);
+            else if (!/\.(so|a|la|py|pyc|h|png|jpg|ttf|mo|qm)(\.|$)/.test(f)) {
+                let st;
+                try { st = fs.lstatSync(p); } catch (e) { return; }
+                if (st.isDirectory()) walk(p, depth + 1);
+                else if (st.isSymbolicLink() && depth < 3) { try { if (fs.statSync(p).isDirectory()) walk(p, depth + 1); } catch (e) { /* dangling */ } }
+            }
+        });
+    };
+    (roots || (process.env.RPV_SEARCH ? process.env.RPV_SEARCH.split(':') : SEARCH_ROOTS)).forEach((r) => walk(r, 0));
+    // the real library first (libgstreamer-1.0.so.0 before .so.0.1800.0 before the bare .so)
+    const rank = (p) => (/\.so\.0$/.test(p) ? 0 : /\.so\.\d/.test(p) ? 1 : 2);
+    out.libs.sort((a, b) => rank(a) - rank(b));
+    return out;
+}
+
+/* the environment that makes a found library (and its plugins next to it) the one used */
+function gstEnvFor(lib) {
+    const dir = path.dirname(lib), env = { IDA_GST_LIB: lib, LD_LIBRARY_PATH: dir + (process.env.LD_LIBRARY_PATH ? ':' + process.env.LD_LIBRARY_PATH : '') };
+    const plugins = [path.join(dir, 'gstreamer-1.0'), path.join(dir, '..', 'gstreamer-1.0'), path.join(dir, '..', 'lib', 'gstreamer-1.0')].filter((d) => { try { return fs.statSync(d).isDirectory(); } catch (e) { return false; } });
+    const uniq = plugins.map((d) => { try { return fs.realpathSync(d); } catch (e) { return d; } }).filter((d, i, all) => all.indexOf(d) === i);
+    if (uniq.length) env.GST_PLUGIN_SYSTEM_PATH_1_0 = uniq.join(':');
+    const scanner = [path.join(dir, 'gstreamer-1.0', 'gst-plugin-scanner'), path.join(dir, '..', 'libexec', 'gstreamer-1.0', 'gst-plugin-scanner')].filter(fileExists)[0];
+    if (scanner) env.GST_PLUGIN_SCANNER_1_0 = scanner;
+    return env;
+}
+
 /* the display's session for a wayland sink: the compositor's socket, wherever the head unit keeps it */
 function displayEnv() {
-    const env = Object.assign({}, process.env);
+    const env = Object.assign({}, process.env, GST_ENV);
     if (env.WAYLAND_DISPLAY && env.XDG_RUNTIME_DIR) return env;
     const dirs = ['/run/wayland', '/run/user/0', '/run'];
     try { fs.readdirSync('/run/user').forEach((u) => dirs.push('/run/user/' + u)); } catch (e) { /* none */ }
@@ -404,8 +458,8 @@ class VideoTool {
 
     /* what GStreamer has: through the shipped launcher (the head unit's libraries, no tools needed), else gst-inspect-1.0 */
     _probe() {
-        return this._probeLauncher().then((r) => r || this._probeInspect()).then((r) => {
-            const base = { devices: this._devices(), display: displayEnv().WAYLAND_DISPLAY || null };
+        return this._probeLauncher().then((r) => (r && r.elements ? r : this._probeInspect().then((x) => (x && x.elements && Object.keys(x.elements).length ? x : r || x)))).then((r) => {
+            const base = { devices: this._devices(), display: displayEnv().WAYLAND_DISPLAY || null, search: this.search || null };
             if (!r.elements) {
                 this.probe = Object.assign(base, { gst: null, error: r.error || 'GStreamer is not on this head unit (no libgstreamer-1.0, no gst-launch-1.0)' });
             } else {
@@ -456,8 +510,8 @@ class VideoTool {
     _check(dec, codec) {
         const conv = this.probe && this.probe.converter && (SOFTWARE.test(dec) || dec === 'decodebin') ? ' ! videoconvert' : '';
         const pl = 'filesrc location=' + SAMPLES[codec] + ' ! ' + PARSERS[codec] + ' ! ' + dec + conv + ' ! fakesink sync=false';
-        const cmd = this.gst.launcher || this.gst.launch;
-        const argv = this.gst.launcher ? ['launch'].concat(args(pl)) : ['-e'].concat(args(pl));
+        const run = this._cmd(pl);
+        const cmd = run[0], argv = run[1];
         return new Promise((resolve) => {
             execFile(cmd, argv, { timeout: CHECK_MS, env: displayEnv(), maxBuffer: 1024 * 1024 }, (err, out, errOut) => {
                 if (!err) { resolve(null); return; }
@@ -467,16 +521,52 @@ class VideoTool {
         });
     }
 
+    /* the command for a pipeline: ida-gst (through the head unit's loader when it must be), else gst-launch-1.0 */
+    _cmd(pipeline) {
+        const l = this.gst.launcher;
+        if (l) return [l.cmd, l.pre.concat(['launch']).concat(args(pipeline))];
+        return [this.gst.launch, ['-e'].concat(args(pipeline))];
+    }
+
+    /* ida-gst probe: as it is; then, when that finds no GStreamer, with each libgstreamer-1.0 found on the head unit
+     * (its folder in LD_LIBRARY_PATH) and, when ida-gst can't start at all, through the head unit's own loader */
     _probeLauncher() {
-        return new Promise((resolve) => {
-            try { fs.accessSync(LAUNCHER, fs.constants.X_OK); } catch (e) { resolve(null); return; }
-            execFile(LAUNCHER, ['probe'], { maxBuffer: 16 * 1024 * 1024, timeout: 30000, env: displayEnv() }, (err, out) => {
+        const tries = [];
+        const attempt = (cmd, pre, env, what) => new Promise((resolve) => {
+            execFile(cmd, pre.concat(['probe']), { maxBuffer: 16 * 1024 * 1024, timeout: 30000, env: Object.assign(displayEnv(), env) }, (err, out) => {
                 const p = parseProbe(out || '');
-                if (p.version && Object.keys(p.elements).length) { this.gst.launcher = LAUNCHER; resolve({ version: p.version, elements: p.elements, via: 'ida-gst' }); return; }
+                if (p.version && Object.keys(p.elements).length) { resolve({ version: p.version, elements: p.elements, via: 'ida-gst' + (what ? ' (' + what + ')' : '') }); return; }
                 const why = /ERROR: (.*)/.exec(out || '');
-                log('warn', 'ida-gst probe: ' + (why ? why[1] : err ? err.message : 'nothing'));
-                resolve(why ? { error: why[1] } : null);
+                tries.push((what || 'as installed') + ': ' + (why ? why[1] : err ? (err.code === 'ENOENT' ? 'cannot start (no loader for it)' : err.message) : 'nothing'));
+                resolve(null);
             });
+        });
+        try { fs.accessSync(LAUNCHER, fs.constants.X_OK); } catch (e) { return Promise.resolve(null); }
+        let found = null;
+        const ok = (r, cmd, pre, env) => { this.gst.launcher = { cmd: cmd, pre: pre }; Object.keys(GST_ENV).forEach((k) => delete GST_ENV[k]); Object.assign(GST_ENV, env); return r; };
+        return attempt(LAUNCHER, [], {}, null).then((r) => {
+            if (r) return ok(r, LAUNCHER, [], {});
+            found = this.search = findGst();
+            log('info', 'GStreamer search: ' + JSON.stringify(found));
+            const ways = [];
+            found.libs.forEach((lib) => {
+                ways.push([LAUNCHER, [], gstEnvFor(lib), lib]);
+                found.loaders.forEach((ld) => ways.push([ld, [LAUNCHER], gstEnvFor(lib), lib + ' through ' + ld]));
+            });
+            if (!found.libs.length) found.loaders.forEach((ld) => ways.push([ld, [LAUNCHER], {}, 'through ' + ld]));
+            const next = (k) => (k >= ways.length ? Promise.resolve(null) : attempt(ways[k][0], ways[k][1], ways[k][2], ways[k][3])
+                .then((res) => (res ? ok(res, ways[k][0], ways[k][1], ways[k][2]) : next(k + 1))));
+            return next(0);
+        }).then((r) => {
+            if (r) return r;
+            tries.forEach((t) => log('warn', 'ida-gst probe ' + t));
+            // gst-launch-1.0 found outside PATH
+            if (!this.gst.launch && found && found.launch[0]) { this.gst.launch = found.launch[0]; this.gst.inspect = found.inspect[0] || null; }
+            const s = found || { libs: [], old: [] };
+            const error = s.libs.length ? 'GStreamer found (' + s.libs[0] + ') but it doesn\'t start: ' + (tries[tries.length - 1] || '').replace(/^[^:]*: /, '')
+                : s.old.length ? 'only GStreamer 0.10 here (' + s.old[0] + '): too old'
+                : 'GStreamer is not on this head unit: no libgstreamer-1.0 anywhere (see probe.txt)';
+            return { error: error };
         });
     }
 
@@ -562,8 +652,8 @@ class VideoTool {
     _run(what, pipeline, o) {
         this._stop('replaced');
         log('info', what + ': ' + (this.gst.launcher ? 'ida-gst launch ' : 'gst-launch-1.0 ') + pipeline);
-        const cmd = this.gst.launcher || this.gst.launch;
-        const argv = this.gst.launcher ? ['launch'].concat(args(pipeline)) : ['-e'].concat(args(pipeline));
+        const run = this._cmd(pipeline);
+        const cmd = run[0], argv = run[1];
         const proc = spawn(cmd, argv, { env: displayEnv(), stdio: [o.input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
         this.proc = proc; this.what = what;
         const st = this.stats = { what: what, target: o.fps, frames: o.frames || 0, fps: null, playingAt: 0, started: Date.now() };
@@ -702,5 +792,5 @@ if (require.main === module) {
     new VideoTool().start();
 }
 
-module.exports = { VideoTool, FrameCounter, StreamKeeper, parseInspect, parseProbe, decodersFor, choose, whyNot, streamPipeline, testPipeline, args,
+module.exports = { VideoTool, FrameCounter, StreamKeeper, findGst, gstEnvFor, parseInspect, parseProbe, decodersFor, choose, whyNot, streamPipeline, testPipeline, args,
     viewFor, aspectOf, spsSize, ASPECTS, DECODERS, SINKS, LAUNCHER, SAMPLES };

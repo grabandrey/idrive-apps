@@ -5,7 +5,7 @@
     "type": "OnlineApp",
     "name": "ida_airplay",
     "vendor": "AirPlayReceiver",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "defaultLanguage": "en_GB",
     "uiDescriptions": [
       {
