@@ -75,8 +75,8 @@ test('login: the exchange with Sony (faked)', () => {
         return Promise.resolve({ status: 200, json: { user_id: '81985529216486895', online_id: 'Driver' } });
     };
     return login.exchange('the-code', fake).then((acc) => {
-        eq(acc, { accountId: Buffer.from('efcdab8967452301', 'hex').toString('base64'), onlineId: 'Driver' });
-        ok(/grant_type=authorization_code&code=the-code&redirect_uri=/.test(calls[0][2]), 'token request body');
+        eq([acc.accountId, acc.onlineId, acc.accessToken], [Buffer.from('efcdab8967452301', 'hex').toString('base64'), 'Driver', 'tok/1']);
+        ok(/grant_type=authorization_code&code=the-code&scope=psn%3Aclientapp.*&redirect_uri=/.test(calls[0][2]), "token request body");
         eq(calls[1][1], '/2.0/oauth/token/tok%2F1', 'account request path');
         return login.exchange('x', () => Promise.resolve({ status: 400, json: { error: 'invalid_grant' } })).then(() => ok(false, 'should fail'), (e) => ok(/invalid_grant/.test(e.message), 'refusal said'));
     });
@@ -99,12 +99,34 @@ test('login: the page on the hotspot, its token, the account sent from the phone
         return req('GET', '/s/wrong')
             .then((r) => { eq(r.status, 404, 'a wrong token is turned away'); return req('GET', '/s/' + s.token); })
             .then((r) => { ok(r.status === 200 && /Sign in with PlayStation/.test(r.text), 'the page'); return req('POST', '/s/' + s.token + '/code', 'url=' + encodeURIComponent('https://x/redirect?code=K9')); })
-            .then((r) => { eq(r.status, 303); eq(got, { accountId: 'AQAAAAAAAAA=', onlineId: 'P-K9' }); return req('GET', '/s/' + s.token); })
+            .then((r) => { eq(r.status, 303); eq([got.accountId, got.onlineId, got.duid], ['AQAAAAAAAAA=', 'P-K9', null], 'no refresh token: no device id kept'); return req('GET', '/s/' + s.token); })
             .then((r) => { ok(/Signed in as P-K9/.test(r.text), 'the page says so'); return req('POST', '/s/' + s.token + '/id', 'accountId=' + encodeURIComponent('AgAAAAAAAAA=')); })
             .then(() => { eq(got.accountId, 'AgAAAAAAAAA=', 'an account id pasted directly'); return req('POST', '/s/' + s.token + '/code', 'url=' + encodeURIComponent('https://example.com/not-it')); })
             .then(() => ok(/no code/.test(s.result.text), 'no code said'))
             .then(() => srv.close());
     });
+});
+
+test('login: play over the internet: scopes, the device id, tokens refreshed', () => {
+    ok(login.SCOPES.split(' ').length === 4 && /sessionManager:remotePlaySession\.system\.update/.test(login.SCOPES), 'the four scopes');
+    ok(login.loginUrl('0000000700410080' + 'ab'.repeat(16)).endsWith('&duid=0000000700410080' + 'ab'.repeat(16) + '&'), 'the device id goes in the address');
+    eq(login.loginUrl(null), login.LOGIN_URL, 'no device id: none');
+    eq(login.loginUrl('nope'), login.LOGIN_URL, 'a bad device id is left out');
+    const calls = [];
+    const fake = (opts, body) => {
+        calls.push(body);
+        return Promise.resolve(/refresh_token=old/.test(body) ? { status: 200, json: { access_token: 'acc2', refresh_token: 'new', expires_in: 3600 } }
+            : /refresh_token=keep/.test(body) ? { status: 200, json: { access_token: 'acc3', expires_in: 10 } }
+                : { status: 400, json: { error: 'invalid_grant' } });
+    };
+    return login.refresh('old', fake, 1000).then((t) => {
+        eq(t, { accessToken: 'acc2', refreshToken: 'new', expiresAt: 1000 + 3600 * 1000 });
+        ok(/grant_type=refresh_token/.test(calls[0]) && /scope=psn%3Aclientapp/.test(calls[0]), 'refresh with the scopes');
+        return login.refresh('keep', fake, 0);
+    }).then((t) => {
+        eq([t.refreshToken, t.expiresAt], ['keep', 60000], 'no new refresh token: the old kept; at least a minute');
+        return login.refresh('gone', fake).then(() => ok(false, 'refused'), (e) => ok(/sign in again/.test(e.message), 'refused: sign in again'));
+    }).then(() => login.refresh(null).then(() => ok(false, 'none'), (e) => ok(/not signed in/.test(e.message), 'no token')));
 });
 
 /* ---- discovery.js ---- */
@@ -244,10 +266,13 @@ test('ui: every screen draws, and only enabled buttons take presses', () => {
     const nothing = keys({ view: 'home' });
     ok(nothing.indexOf('rpPlay') < 0 && nothing.indexOf('rpPair') < 0 && nothing.indexOf('rpSignIn') >= 0, 'not ready: no Play');
     const ready = { view: 'home', account: { onlineId: 'D' }, console: { name: 'PS5', host: '1.2.3.4', state: 'ready' }, paired: { registKey: 'ab' },
-        engine: { name: 'e' }, video: { tool: true, probe: { decoder: 'v4l2h264dec', hardware: true, sink: 'waylandsink' }, fps: 60, size: '1280x720', target: 60 }, parked: true };
+        engine: { name: 'e' }, video: { tool: true, probe: { decoder: 'v4l2h264dec', hardware: true, sink: 'waylandsink' }, fps: 60, size: '1280x720', target: 60 }, parked: true, route: 'local' };
     ok(keys(ready).indexOf('rpPlay') >= 0, 'ready: Play');
     ok(keys(Object.assign({}, ready, { parked: false })).indexOf('rpPlay') < 0, 'moving: no Play');
     ok(keys(Object.assign({}, ready, { parked: false })).indexOf('rpTest') < 0, 'moving: no video test');
+    ok(keys(Object.assign({}, ready, { route: null })).indexOf('rpPlay') < 0, 'nowhere to play: no Play');
+    const away = Object.assign({}, ready, { console: null, paired: null, route: 'internet', internet: true, remote: { name: 'PS5-Home', consoleId: 'ab', type: 'PS5' } });
+    ok(keys(away).indexOf('rpPlay') >= 0 && keys(away).indexOf('rpPair') < 0, 'away from home: Play over the internet, no pairing');
     const si = ui.draw(rec, { view: 'signin', qr: qr.encode('http://192.168.43.1:8890/s/0123456789ab'), url: 'http://192.168.43.1:8890/s/0123456789ab' }, lay);
     ok(si.rec.n > 500, 'the QR code is drawn');
     eq(keys({ view: 'pin', pin: '1234' }).filter((k) => /^rpK\d$/.test(k)).length, 10, 'ten digits');
@@ -388,6 +413,12 @@ test('engine: the real program answers the app (x86_64 here)', () => {
             return l.ask({ op: 'register', host: '127.0.0.1', type: 'PS5', accountId: 'AQAAAAAAAAA=', pin: '1234' }).then(() => ok(false, 'a short pin'), (e) => ok(/8-digit/.test(e.message), 'a short pin is refused'));
         })
         .then(() => l.ask({ op: 'register', host: '127.0.0.1', type: 'PS5', accountId: 'AQAAAAAAAAA=', pin: '12345678' }).then(() => ok(false, 'no console here'), (e) => ok(/refused the pairing/.test(e.message), 'no console: refused')))
+        .then(() => l.ask({ op: 'duid' }))
+        .then((d) => {
+            ok(/^0000000700410080[0-9a-f]{32}$/.test(d.duid), 'this car\'s PSN device id');
+            return l.ask({ op: 'start', type: 'PS5', remote: { token: 't' }, video: {} }).then(() => ok(false, 'no console id'), (e) => ok(/64-digit/.test(e.message), 'over the internet: the console id is needed'));
+        })
+        .then(() => l.ask({ op: 'start', type: 'PS5', remote: { token: 't', consoleId: 'ab'.repeat(32) }, video: {} }).then(() => ok(false, 'no account'), (e) => ok(/account id/.test(e.message), 'over the internet: the account id is needed')))
         .then(() => l.ask({ op: 'start', host: '127.0.0.1', type: 'PS5', registered: { rpRegistKey: 'AAAAAAAAAAAAAAAAAAAAAA==', rpKey: 'AAAAAAAAAAAAAAAAAAAAAA==' },
             video: { socket: path.join(dir, 'none.sock'), codec: 'h264', width: 1280, height: 720, fps: 60 } }))
         .then(() => until(() => events.indexOf('ended') >= 0, 15000))

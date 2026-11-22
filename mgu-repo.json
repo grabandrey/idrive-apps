@@ -56,8 +56,8 @@
       "path": "packages/remoteplay/app",
       "build": "unit",
       "title": "Remote Play",
-      "description": "Play your PlayStation on the car's screen while parked: QR sign-in from your phone, find, wake and pair the console, the stream through its own engine (built on chiaki-ng), video at full frame rate through the head unit's hardware decoder, touch controls or a USB gamepad. EXPERIMENTAL, untested on a car.",
-      "requires": { "ida-remoteplay-video": "1.0.0", "ida-remoteplay-engine": "1.0.0" },
+      "description": "Play your PS5 on the car's screen while parked, at home over the internet or on the car's network: QR sign-in from your phone, the stream through its own engine (built on chiaki-ng), video at full frame rate through the head unit's hardware decoder, touch controls or a USB gamepad. EXPERIMENTAL, untested on a car.",
+      "requires": { "ida-remoteplay-video": "1.0.0", "ida-remoteplay-engine": "1.1.0" },
       "uninstallable": true,
       "mguHmi": ["ID8"]
     }

@@ -1,12 +1,12 @@
 # Remote Play: your PlayStation on the car's screen, parked
 
-An iDrive 8 app and a root tool that put your PlayStation on the car's centre screen, for when you're parked and
-waiting. Sign in with a QR code from your phone, find and wake the console on the car's network, pair it with its
-PIN, and play with the touch controls or a USB gamepad plugged into the car.
+An iDrive 8 app and root tools that put your PlayStation on the car's centre screen, for when you're parked and
+waiting: **your PS5 at home, over the internet**, or a console on the car's own network. Sign in with a QR code
+from your phone, and play with the touch controls or a USB gamepad plugged into the car.
 
-| Home | Play |
+| Away from home | Play |
 |---|---|
-| ![Home](design/app_home.png) | ![Play](design/app_play.png) |
+| ![Away](design/app_away.png) | ![Play](design/app_play.png) |
 | ![Sign in](design/app_signin.png) | ![Pair](design/app_pin.png) |
 
 > **⚠️ Experimental, untested on a car or with a console.** Every part runs and is tested on a desktop. The engine's
@@ -43,20 +43,38 @@ what was found.
    (`ida_remoteplay`, which installs **Remote Play Video**, `ida-remoteplay-video`, and **Remote Play Engine**,
    `ida-remoteplay-engine`, first). For the drawn screens,
    also install **Renderer** (`mgu-render`) from MGU Store's own source.
-2. **The network:** the car and the PlayStation must be on the same network. The easy way is to turn on the car's
-   Wi-Fi hotspot and connect the console to it. If the console stays home, it needs another way to reach the car:
-   that's play over the internet through PSN, which the app doesn't offer yet.
+2. **Your PS5 at home** (once, on the console): *Settings > System > Remote Play*: **Enable Remote Play** on; and
+   *Settings > System > Power Saving > Features Available in Rest Mode*: **Stay Connected to the Internet** and
+   **Enable Turning On PS5 from Network** on. Then leave it in rest mode when you go out.
 3. **Video test** (Home): an 8-second moving picture at 1280×720, 60 fps. With an encoder on the head unit, it's
    encoded and decoded the way a stream is. The result is the frame rate the car really shows. Do this first: it
    shows whether full frame rate works on your head unit, before any console is involved.
 4. **Sign in**: a QR code. With your phone on the car's hotspot, scan it, tap **Sign in with PlayStation**, sign in
    at Sony, then copy the address of the page that ends on *redirect* and paste it into the car's page. The car
-   swaps the code for your account's number at Sony and keeps only that number (the console asks for it when
-   pairing). No password or token is kept. If you already know your account ID (base64), the page takes it
-   directly.
-5. **Find console**, then **Pair**: on the PlayStation, go to *Settings > System > Remote Play > Pair Device* and
-   type the 8 digits it shows.
-6. **Play**. **Exit** (bottom left) ends it. **Wake** wakes a paired console from rest mode.
+   keeps your account's number and a PSN sign-in token (see [Your PSN sign-in](#your-psn-sign-in)). Your
+   password stays with Sony.
+5. **Find console**: the car asks PSN for the consoles on your account and picks your PS5. The Console row then
+   says *at home, over the internet*, and the button says **Play over the internet**. No PIN is needed: over PSN,
+   the console pairs itself for each session.
+6. **Play**. **Exit** (bottom left) ends it.
+
+**A console on the car's network** (for example a PS5 you brought along, on the car's hotspot) is used instead
+whenever it answers there. Pair it once with **Pair** (*Settings > System > Remote Play > Pair Device*, the 8 digits
+it shows). **Wake** wakes it from rest mode.
+
+### Over the internet
+
+The car needs an internet connection the engine can use: the car's own connectivity, or the car on your phone's
+hotspot. PSN tells your PS5 to open a session. Then the engine and the console punch through the routers on both
+sides (UPnP where your home router offers it, then STUN). On mobile networks, which rewrite ports, it also guesses
+ports, the way chiaki-ng does for hotspots.
+
+- **Data:** the stream asks for 6 Mbit/s over the internet (10 at home), about **2.7 GB an hour** at 720p 60 fps. On
+  a weak connection the console lowers the quality itself.
+- **It may not get through** some mobile networks (carrier NAT that blocks hole punching). The log then says which
+  step failed (`over the internet: punching through the routers failed`). Your phone's hotspot is the other way to
+  try.
+- Delay is higher than at home. Fine for most games, harder for fast shooters.
 
 If the console asks for a login PIN when a device connects, the stream ends with a message saying so. Switch the
 PIN off on the console to play from the car.
@@ -107,12 +125,28 @@ The video goes to `/run/ida-remoteplay-video/stream.sock`: first one JSON line,
 `{"codec":"h264","width":1280,"height":720,"fps":60,"rect":{…}}`, then the frames. The engine asks the console for
 a keyframe whenever it opens that socket, so the decoder always starts on a full picture.
 
+Over the internet: `{"op":"devices","token"}` lists the account's consoles (`{"devices":[{"name","consoleId","type","remotePlay"}]}`),
+`{"op":"duid"}` makes this car's PSN device id (once, for the sign-in), and `start` takes
+`"remote":{"token","consoleId","portGuessing"}` in place of `host` and `registered`. The PSN steps run on a thread
+of their own, so Exit cancels them. The engine finds PSN's HTTPS certificates through `cacert.pem` (Mozilla's list,
+shipped with it, MPL-2.0).
+
 **Not yet:** sound. The engine runs the session with audio off, because the car's audio belongs to BMW's system.
-Play over the internet isn't offered either: the library can do it, but the app doesn't drive it yet.
+
+## Your PSN sign-in
+
+Playing over the internet needs PSN's permission each time, so the car keeps a **refresh token** from your
+sign-in. Before each game it gets a short-lived access token from it, kept in memory only. Sony may rotate the
+refresh token, and the car saves the new one.
+
+The token is in `remoteplay.json`, readable by the app alone (mode 600), and it never leaves the car except to Sony.
+**Sign out** (on the Sign in screen) deletes it. If Sony stops accepting it, the car forgets it and asks you to sign in
+again. The permissions it asks Sony for are the four Remote Play needs: your account, the console list, PSN's push
+channel, and Remote Play sessions.
 
 ## Settings and logs
 
-- App: `remoteplay.json` (the account id and nickname, the console, the pairing, the stream size) and
+- App: `remoteplay.json` (the account id and PSN token, the consoles, the pairing, the stream size) and
   `remoteplay.log`, in the first writable folder of the app's home, its working folder and the temp folder. The
   **Logs** screen shows the same lines, as does the head unit's log (`RMPL`).
 - Engine: its log is in the journal (`journalctl -u ida-remoteplay-engine`): pairing, the session, and why it ended.

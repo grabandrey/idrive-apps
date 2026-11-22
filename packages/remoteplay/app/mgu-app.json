@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "id": "ida_remoteplay",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "tree": "package",
   "modules": [
     "src/ida_remoteplay.js",

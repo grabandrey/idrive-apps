@@ -4,11 +4,13 @@
  *
  *   Sign in      a QR code for a page on the car's hotspot: sign in at PlayStation on the phone (login.js); the car
  *                keeps the account id the console asks for when pairing
- *   Find, Wake   the console on the car's network (discovery.js): the car's hotspot, or the phone's with the car on it
+ *   Find, Wake   the console on the car's network (discovery.js): the car's hotspot, or the phone's with the car on it;
+ *                and, signed in, the account's consoles through PSN, for play over the internet when the console is home
  *   Pair         the console's 8-digit PIN (Settings > System > Remote Play > Pair Device), through the stream engine
  *   Video test   a moving picture at 1280x720, 60 fps, through the same decoder and display the game will use: the
  *                frame rate the car really shows
- *   Play         the stream engine runs the console's session and writes the video into the video tool, which decodes
+ *   Play         on the same network when the console answers there (paired with its PIN); else over the internet
+ *                through PSN (no PIN: the console pairs itself for each session). The stream engine runs the console's session and writes the video into the video tool, which decodes
  *                it in hardware and shows it in the middle of the screen at the stream's rate; the touch controls (pad.js)
  *                or a USB gamepad (the video tool reads it) go back to the console
  *
@@ -30,7 +32,7 @@ const { Gpu } = require('./gpu.js');
 const ui = require('./ui.js');
 const qr = require('./qr.js');
 const { Pad, layout } = require('./pad.js');
-const { SignIn } = require('./login.js');
+const { SignIn, refresh } = require('./login.js');
 const { Discovery } = require('./discovery.js');
 const { JsonLink, VIDEO_SOCKET, ENGINE_SOCKET, STREAM_SOCKET } = require('./links.js');
 const { LogRing } = require('./log_ring.js');
@@ -48,7 +50,8 @@ const FRAME_MS = 100;
 const PLAY_FRAME_MS = 50;           // the touch controls answer within a frame
 const INPUT_KEEP_MS = 500;          // the controller state again, unchanged, so a lost line can't leave a button held
 const ID8_AREA = { x: 0, y: 76, w: 2880, h: 764 };
-const STREAM = { width: 1280, height: 720, fps: 60, bitrateKbps: 10000 };
+const STREAM = { width: 1280, height: 720, fps: 60, bitrateKbps: 10000, remoteBitrateKbps: 6000 };   // over the internet: less, for mobile data
+const TOKEN_MARGIN_MS = 120000;     // an access token is refreshed this long before it runs out
 const FOREGROUND_REASONS = ['ENTRY_POINT', 'LUM', 'BOOKMARK', 'START_WIDGET', 'TRIGGER_HMI', 'SPEECH_COMMAND'];
 const isTrue = (v) => v === true || v === 1 || v === 'true' || v === '1';
 
@@ -92,6 +95,8 @@ class RemotePlayApp extends OnlineApp {
             account: saved.account || null,            // { accountId, onlineId }
             console: saved.console || null,            // discovery.js: { host, name, type, id, state }
             registered: saved.registered || null,      // the engine's, kept as it gave it
+            remote: saved.remote || null,              // the account's console through PSN: { name, consoleId, type, remotePlay }
+            duid: saved.duid || null,                  // this car's PSN device id (the engine makes it once)
             stream: Object.assign({}, STREAM, saved.stream || {}),
         };
         this._view = 'home';
@@ -109,8 +114,15 @@ class RemotePlayApp extends OnlineApp {
         this._lay = layout(ui.W, ui.H);
         this._inputAt = 0;
 
-        this._signIn = new SignIn({ log: logger });
-        this._signIn.on('account', (acc) => { this._saved.account = acc; this._save(); this._note = null; this._dirty = true; });
+        this._access = null;                           // { token, expiresAt }: in memory only
+        this._signIn = new SignIn({ log: logger, duid: () => this._saved.duid });
+        this._signIn.on('account', (acc) => {
+            this._saved.account = { accountId: acc.accountId, onlineId: acc.onlineId, refreshToken: acc.refreshToken || null, duid: acc.duid || null };
+            this._access = acc.accessToken ? { token: acc.accessToken, expiresAt: acc.expiresAt } : null;
+            this._save();
+            this._note = null; this._dirty = true;
+            if (this._canInternet()) this._findRemote(false);
+        });
         this._discovery = new Discovery({ log: logger });
         this._videoLink = new JsonLink('video tool', VIDEO_SOCKET, logger);
         this._engine = new JsonLink('stream engine', ENGINE_SOCKET, logger);
@@ -127,7 +139,8 @@ class RemotePlayApp extends OnlineApp {
     }
 
     _save() {
-        try { if (SETTINGS) fs.writeFileSync(SETTINGS, JSON.stringify(this._saved, null, 1)); } catch (e) { logger.warn('not saved: ' + e.message); }
+        // it holds the PSN refresh token: readable by the app alone
+        try { if (SETTINGS) { fs.writeFileSync(SETTINGS, JSON.stringify(this._saved, null, 1), { mode: 0o600 }); fs.chmodSync(SETTINGS, 0o600); } } catch (e) { logger.warn('not saved: ' + e.message); }
     }
 
     _init() {
@@ -176,6 +189,11 @@ class RemotePlayApp extends OnlineApp {
                 this._engineInfo = { name: h.name, version: h.version, targets: h.targets || [] };
                 logger.info('stream engine: ' + h.name + ' ' + (h.version || ''));
                 this._dirty = true;
+                if (!this._saved.duid) {
+                    return e.ask({ op: 'duid' }).then((d) => { this._saved.duid = d.duid; this._save(); logger.info('this car\'s PSN device id made'); },
+                        (err) => logger.warn('PSN device id: ' + err.message));
+                }
+                return undefined;
             }, (err) => logger.warn('stream engine hello: ' + err.message));
         });
         e.on('lost', () => { this._engineInfo = null; if (this._view === 'play') this._endPlay('the stream engine went away'); this._dirty = true; });
@@ -238,7 +256,7 @@ class RemotePlayApp extends OnlineApp {
         else if (name === 'rpKDel' && this._view === 'pin') this._pin = this._pin.slice(0, -1);
         else if (name === 'rpKPair' && this._view === 'pin') this._pair();
         else if (name === 'rpSignIn') this._openSignIn();
-        else if (name === 'rpSignOut') { this._saved.account = null; this._save(); logger.info('signed out'); }
+        else if (name === 'rpSignOut') { this._saved.account = null; this._saved.remote = null; this._access = null; this._save(); logger.info('signed out (the PSN token deleted)'); }
         else if (name === 'rpFind') this._find(false);
         else if (name === 'rpWake') this._wake();
         else if (name === 'rpPair') { this._pin = ''; this._note = null; this._warn = false; this._view = 'pin'; }
@@ -272,7 +290,57 @@ class RemotePlayApp extends OnlineApp {
         });
     }
 
+    /* signed in with a PSN token made for this car's device id: play over the internet is possible */
+    _canInternet() { const a = this._saved.account; return !!(a && a.refreshToken && a.duid); }
+
+    /* a fresh enough access token: kept in memory, refreshed from the saved refresh token (which Sony may rotate) */
+    _token() {
+        const a = this._saved.account;
+        if (this._access && this._access.expiresAt - Date.now() > TOKEN_MARGIN_MS) return Promise.resolve(this._access.token);
+        if (!a || !a.refreshToken) return Promise.reject(new Error('not signed in for play over the internet: sign in again'));
+        return refresh(a.refreshToken).then((t) => {
+            this._access = { token: t.accessToken, expiresAt: t.expiresAt };
+            if (t.refreshToken !== a.refreshToken) { a.refreshToken = t.refreshToken; this._save(); }
+            return t.accessToken;
+        }, (err) => {
+            if (/refused the sign-in/.test(err.message)) { a.refreshToken = null; this._save(); }
+            throw err;
+        });
+    }
+
+    /* the account's consoles through PSN: the one with the local console's name, or the first with Remote Play on */
+    _findRemote(quiet) {
+        if (!this._canInternet() || !this._engine.ready || this._remoteSearching) return;
+        this._remoteSearching = true;
+        this._dirty = true;
+        this._token()
+            .then((token) => this._engine.ask({ op: 'devices', token: token }, 30000))
+            .then((r) => {
+                const list = r.devices || [];
+                const local = this._saved.console;
+                const pick = list.filter((d) => local && d.name === local.name)[0] || list.filter((d) => d.type === 'PS5' && d.remotePlay)[0] ||
+                    list.filter((d) => d.remotePlay)[0] || list[0] || null;
+                this._saved.remote = pick;
+                this._save();
+                logger.info('PSN: ' + (list.length ? list.map((d) => d.name + ' (' + d.type + (d.remotePlay ? '' : ', Remote Play off') + ')').join('; ') : 'no consoles on the account'));
+                if (!quiet && !pick) { this._note = 'No console on your PlayStation account. Has it been used with this account, with Remote Play on?'; this._warn = true; }
+            }, (err) => {
+                logger.warn('PSN consoles: ' + err.message);
+                if (!quiet) { this._note = 'Over the internet: ' + err.message; this._warn = true; }
+            })
+            .then(() => { this._remoteSearching = false; this._dirty = true; });
+    }
+
+    /* where Play goes: the console answering on this network (paired), else through PSN */
+    _route() {
+        const c = this._saved.console, reg = this._saved.registered;
+        if (c && c.state === 'ready' && reg) return 'local';
+        if (this._saved.remote && this._canInternet()) return 'internet';
+        return null;
+    }
+
     _find(quiet) {
+        this._findRemote(true);
         if (this._searching) return;
         this._searching = true;
         this._dirty = true;
@@ -283,7 +351,7 @@ class RemotePlayApp extends OnlineApp {
                 this._searching = false;
                 if (!list.length) {
                     if (saved) this._saved.console = Object.assign({}, saved, { state: 'gone' });
-                    if (!quiet) { this._note = 'No PlayStation found. Is it on the same network as the car (its hotspot, with Remote Play switched on)?'; this._warn = true; }
+                    if (!quiet && !this._saved.remote) { this._note = 'No PlayStation found on the car\'s network. Sign in to play your PS5 at home over the internet.'; this._warn = true; }
                     logger.info('no console found');
                 } else {
                     const same = saved && list.filter((c) => c.id === saved.id || c.host === saved.host)[0];
@@ -344,20 +412,27 @@ class RemotePlayApp extends OnlineApp {
     }
 
     _play() {
-        const c = this._saved.console, reg = this._saved.registered, p = this._video.probe;
+        const route = this._route(), p = this._video.probe;
         if (!this._gate.parked) { this._moving(); return; }
-        if (!c || !reg || !this._engine.ready || !this._video.tool) return;
+        if (!route || !this._engine.ready || !this._video.tool) return;
+        const internet = route === 'internet';
+        const c = internet ? this._saved.remote : this._saved.console;
         const s = this._saved.stream;
         const codec = p && p.hardwareH265 ? 'h265' : 'h264';
+        const video = { socket: STREAM_SOCKET, codec: codec, width: s.width, height: s.height, fps: s.fps,
+            bitrateKbps: internet ? s.remoteBitrateKbps : s.bitrateKbps, rect: this._videoRect() };
+        const accountId = this._saved.account && this._saved.account.accountId;
         this._view = 'play';
-        this._session = { state: 'connecting' };
+        this._session = { state: 'connecting', reason: internet ? 'over the internet' : null };
         this._sessionLogged = false;
         this._pad.release();
         this._written = {};
-        logger.info('play: ' + c.name + ', ' + s.width + 'x' + s.height + ' ' + s.fps + ' fps ' + codec);
-        this._engine.ask({ op: 'start', host: c.host, type: c.type, registered: reg, accountId: this._saved.account && this._saved.account.accountId,
-            video: { socket: STREAM_SOCKET, codec: codec, width: s.width, height: s.height, fps: s.fps, bitrateKbps: s.bitrateKbps, rect: this._videoRect() } }, 30000)
-            .catch((err) => this._endPlay('could not start: ' + err.message));
+        logger.info('play: ' + c.name + (internet ? ' over the internet' : ' on this network') + ', ' + s.width + 'x' + s.height + ' ' + s.fps + ' fps ' + codec + ', ' + video.bitrateKbps + ' kbps');
+        const start = internet
+            ? this._token().then((token) => this._engine.ask({ op: 'start', type: c.type, accountId: accountId,
+                remote: { token: token, consoleId: c.consoleId, portGuessing: 1 }, video: video }, 30000))
+            : this._engine.ask({ op: 'start', host: c.host, type: c.type, registered: this._saved.registered, accountId: accountId, video: video }, 30000);
+        start.catch((err) => this._endPlay('could not start: ' + err.message));
     }
 
     _endPlay(why) {
@@ -391,7 +466,9 @@ class RemotePlayApp extends OnlineApp {
         const c = this._saved.console;
         return {
             view: this._view, focus: this._ui.focus, pressed: this._ui.pressed, note: this._note, warn: this._warn,
-            account: this._saved.account, console: c, consoleName: c && c.name, searching: this._searching, paired: this._saved.registered,
+            account: this._saved.account, console: c, consoleName: this._route() === 'internet' ? this._saved.remote.name : c && c.name,
+            searching: this._searching || !!this._remoteSearching, paired: this._saved.registered,
+            remote: this._saved.remote, internet: this._canInternet(), route: this._route(),
             engine: this._engineInfo, video: this._video, pad: this._usbPad && this._usbPad.name, parked: this._gate.parked,
             url: this._signUrl, qr: this._view === 'signin' ? this._qr : null, pin: this._pin, pairing: this._pairing,
             session: this._session, input: this._view === 'play' ? (this._usbPad ? this._usbPad.state : this._pad.state) : null,

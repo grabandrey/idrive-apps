@@ -186,11 +186,16 @@ function home(rec, m, targets) {
     rec.rrect(S.x, S.y, S.w, S.h, 28, C.card);
     const col = (i) => S.x + 50 + i * 800, line = (j) => S.y + 60 + j * 120;
     const acc = m.account;
-    row(rec, col(0), line(0), 760, 'PlayStation account', acc ? (acc.onlineId || 'Signed in') : 'Not signed in', acc ? 'ok' : 'none');
-    const c = m.console;
-    row(rec, col(1), line(0), 760, 'Console', m.searching ? 'Looking on the car\'s network...' : c ? c.name + '  ·  ' + c.host + '  ·  ' + (c.state === 'ready' ? 'on' : c.state === 'standby' ? 'resting' : 'not answering') : 'None found yet',
-        m.searching ? 'warn' : c ? (c.state === 'ready' ? 'ok' : 'warn') : 'none');
-    row(rec, col(0), line(1), 760, 'Paired', m.paired ? 'Paired with ' + (m.paired.nickname || (c && c.name) || 'the console') : 'Not paired', m.paired ? 'ok' : 'none');
+    row(rec, col(0), line(0), 760, 'PlayStation account', acc ? (acc.onlineId || 'Signed in') + (m.internet ? '  ·  internet play on' : '  ·  at home only') : 'Not signed in', acc ? 'ok' : 'none');
+    const c = m.console, r = m.remote, here = c && c.state === 'ready';
+    const ctext = m.searching ? 'Looking for it...'
+        : m.route === 'local' ? c.name + '  ·  here, ' + c.host
+        : c && c.state === 'standby' && m.paired ? c.name + '  ·  here, resting (Wake)'
+        : m.route === 'internet' ? r.name + '  ·  at home, over the internet'
+        : c ? c.name + '  ·  not answering' : r ? r.name + '  ·  sign in again for the internet' : 'None found yet';
+    row(rec, col(1), line(0), 760, 'Console', ctext, m.searching ? 'warn' : m.route ? 'ok' : c || r ? 'warn' : 'none');
+    const ptext = m.route === 'internet' ? 'Not needed over the internet' : m.paired ? 'Paired with ' + (m.paired.nickname || (c && c.name) || 'the console') : 'Not paired';
+    row(rec, col(0), line(1), 760, 'Paired', ptext, m.route === 'internet' || m.paired ? 'ok' : 'none');
     const e = m.engine;
     row(rec, col(1), line(1), 760, 'Stream engine', e ? (e.name || 'Engine') + (e.version ? ' ' + e.version : '') : 'Not installed', e ? 'ok' : 'bad');
     const v = m.video || {};
@@ -207,12 +212,12 @@ function home(rec, m, targets) {
     const b = (i, j, key, label, o) => pill(rec, m, targets, key, label, bx + j * (bw + gap), 120 + i * (bh + gap), bw, bh, o);
     b(0, 0, 'rpSignIn', acc ? 'Account' : 'Sign in');
     b(0, 1, 'rpFind', 'Find console');
-    b(1, 0, 'rpWake', 'Wake', { disabled: !(c && m.paired && c.state !== 'ready') });
-    b(1, 1, 'rpPair', m.paired ? 'Pair again' : 'Pair', { disabled: !(c && acc && e) });
+    b(1, 0, 'rpWake', 'Wake', { disabled: !(c && m.paired && c.state === 'standby') });
+    b(1, 1, 'rpPair', m.paired ? 'Pair again' : 'Pair', { disabled: !(here && acc && e) });
     b(2, 0, 'rpTest', 'Video test', { disabled: !(v.tool && m.parked) });
     b(2, 1, 'rpLogs', 'Logs');
-    const can = !!(c && m.paired && e && v.tool && m.parked);
-    pill(rec, m, targets, 'rpPlay', 'Play', bx, 120 + 3 * (bh + gap), bw * 2 + gap, 520 - 3 * (bh + gap), { disabled: !can, style: 'title', fill: can ? C.accent : C.tile });
+    const can = !!(m.route && e && v.tool && m.parked);
+    pill(rec, m, targets, 'rpPlay', m.route === 'internet' ? 'Play over the internet' : 'Play', bx, 120 + 3 * (bh + gap), bw * 2 + gap, 520 - 3 * (bh + gap), { disabled: !can, style: 'title', fill: can ? C.accent : C.tile });
     rec.text('small', 'Not affiliated with Sony Interactive Entertainment. Play only while parked.', 90, 700, C.faint);
 }
 

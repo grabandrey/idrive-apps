@@ -7,6 +7,9 @@
  *   the session    chiaki_session: the console's encrypted stream; its video frames (H.264 / H.265, Annex B) go to the
  *                  video tool's stream socket, which decodes them in hardware at the stream's rate
  *   the controller each {"op":"input"} from the app becomes the session's controller state
+ *   over the internet  with a PSN token (the app's sign-in), the console is found through PSN ({"op":"devices"}) and
+ *                  reached through the routers on both sides (chiaki's holepunch: UPnP, STUN, port guessing for
+ *                  mobile networks); the console pairs itself through PSN for each session, so no PIN is needed
  *
  * Socket /run/ida-remoteplay-engine/engine.sock (0666: the app runs as its own user), JSON lines; the messages are in
  * the app's links.js. One client (the app) at a time; one pairing or one session at a time.
@@ -21,6 +24,7 @@
 #include <chiaki/session.h>
 #include <chiaki/controller.h>
 #include <chiaki/base64.h>
+#include <chiaki/remote/holepunch.h>
 #include <json-c/json_object.h>
 #include <json-c/json_tokener.h>
 
@@ -38,7 +42,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define ENGINE_VERSION "1.0.0"
+#define ENGINE_VERSION "1.1.0"
 #define DEFAULT_RUN "/run/ida-remoteplay-engine"
 
 static char sock_path[256];
@@ -254,7 +258,7 @@ static void reg_cleanup(void)
 
 /* ======================================================================== the session */
 static struct {
-	int running;            /* 1 running, 2 ended (the main loop cleans up) */
+	int running;            /* 1 running, 2 ended, 3 never started, 4 connecting over the internet */
 	ChiakiSession session;
 	char host[128];
 	int video;              /* the video tool's stream socket */
@@ -339,6 +343,9 @@ static void event_cb(ChiakiEvent *event, void *user)
 			say("info", "connected to %s", ses.host);
 			session_event("connecting", "connected, waiting for the picture");
 			break;
+		case CHIAKI_EVENT_HOLEPUNCH:
+			session_event("connecting", event->data_holepunch.finished ? "through the routers: the video path is open" : "through the routers: opening the video path");
+			break;
 		case CHIAKI_EVENT_LOGIN_PIN_REQUEST:
 			say("warn", "the console asks for its login PIN");
 			session_event("ended", "the console asks for a login PIN: switch it off on the console (Settings > Users and Accounts) to play from the car");
@@ -359,6 +366,81 @@ static void event_cb(ChiakiEvent *event, void *user)
 	}
 }
 
+/* over the internet: what the connecting thread needs */
+static struct {
+	ChiakiHolepunchSession hp;
+	uint8_t console_uid[32];
+	ChiakiHolepunchConsoleType type;
+	pthread_t thread;
+	int thread_running;
+	volatile int cancelled;
+} net;
+
+static int parse_hex32(const char *hex, uint8_t *out)
+{
+	if(!hex || strlen(hex) != 64)
+		return -1;
+	for(int i = 0; i < 32; i++)
+	{
+		unsigned v;
+		if(sscanf(hex + i * 2, "%2x", &v) != 1)
+			return -1;
+		out[i] = (uint8_t)v;
+	}
+	return 0;
+}
+
+/* PSN: the session on Sony's server, the console told, the control hole punched; then the stream starts. Blocking
+ * network steps, so on their own thread; the main loop keeps answering the app (Exit cancels them). */
+static void *net_connect_thread(void *user)
+{
+	(void)user;
+	const char *step = "UPnP";
+	ChiakiErrorCode err = chiaki_holepunch_upnp_discover(net.hp);
+	if(err == CHIAKI_ERR_SUCCESS && !net.cancelled)
+	{
+		step = "creating the PSN session";
+		session_event("connecting", "reaching the console through PSN");
+		err = chiaki_holepunch_session_create(net.hp);
+	}
+	if(err == CHIAKI_ERR_SUCCESS && !net.cancelled)
+	{
+		step = "the connection offer";
+		err = holepunch_session_create_offer(net.hp);
+	}
+	if(err == CHIAKI_ERR_SUCCESS && !net.cancelled)
+	{
+		step = "starting the console's session (is it on or in rest mode, with Remote Play and internet in rest mode on?)";
+		err = chiaki_holepunch_session_start(net.hp, net.console_uid, net.type);
+	}
+	if(err == CHIAKI_ERR_SUCCESS && !net.cancelled)
+	{
+		step = "punching through the routers";
+		session_event("connecting", "punching through the routers");
+		err = chiaki_holepunch_session_punch_hole(net.hp, CHIAKI_HOLEPUNCH_PORT_TYPE_CTRL);
+	}
+	if(err == CHIAKI_ERR_SUCCESS && !net.cancelled)
+	{
+		err = chiaki_session_start(&ses.session);
+		if(err == CHIAKI_ERR_SUCCESS)
+		{
+			say("info", "internet: connected to the console, the stream is starting");
+			ses.running = 1;
+			return NULL;
+		}
+		step = "the stream";
+	}
+	char reason[256];
+	if(net.cancelled)
+		snprintf(reason, sizeof(reason), "cancelled");
+	else
+		snprintf(reason, sizeof(reason), "over the internet: %s failed (%s)", step, chiaki_error_string(err));
+	say("warn", "%s", reason);
+	session_event("ended", reason);
+	ses.running = 3;     /* initialised, never started: the main loop finalises it */
+	return NULL;
+}
+
 static void do_start(int id, json_object *m)
 {
 	if(ses.running)
@@ -367,26 +449,51 @@ static void do_start(int id, json_object *m)
 		return;
 	}
 	const char *host = str_of(m, "host");
-	json_object *r = obj_of(m, "registered"), *v = obj_of(m, "video");
-	if(!host || !r || !v)
+	json_object *r = obj_of(m, "registered"), *v = obj_of(m, "video"), *remote = obj_of(m, "remote");
+	if((!remote && (!host || !r)) || !v)
 	{
-		reply_err(id, "start needs host, registered and video");
+		reply_err(id, "start needs video, and host and registered (here) or remote (over the internet)");
 		return;
 	}
 	ChiakiConnectInfo ci;
 	memset(&ci, 0, sizeof(ci));
-	snprintf(ses.host, sizeof(ses.host), "%s", host);
+	snprintf(ses.host, sizeof(ses.host), "%s", host ? host : "PSN");
 	ci.ps5 = !is_ps4(m);
 	ci.host = ses.host;
-	if(b64_decode_exact(str_of(r, "rpRegistKey"), (uint8_t *)ci.regist_key, sizeof(ci.regist_key)) < 0
+	const char *account = str_of(m, "accountId");
+	if(account)
+		b64_decode_exact(account, ci.psn_account_id, CHIAKI_PSN_ACCOUNT_ID_SIZE);
+	if(remote)
+	{
+		const char *token = str_of(remote, "token");
+		memset(&net, 0, sizeof(net));
+		if(!token || parse_hex32(str_of(remote, "consoleId"), net.console_uid) < 0)
+		{
+			reply_err(id, "remote needs a PSN token and the console's 64-digit id");
+			return;
+		}
+		if(!account)
+		{
+			reply_err(id, "over the internet the account id is needed: sign in again");
+			return;
+		}
+		net.type = ci.ps5 ? CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS5 : CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS4;
+		net.hp = chiaki_holepunch_session_init(token, &clog);
+		if(!net.hp)
+		{
+			reply_err(id, "PSN: the session could not be set up (the token may be out of date: sign in again)");
+			return;
+		}
+		/* mobile networks rewrite ports: guess them, as chiaki-ng does for hotspots (on unless asked otherwise) */
+		chiaki_holepunch_session_force_port_guessing(net.hp, int_of(remote, "portGuessing", 1) != 0);
+		ci.holepunch_session = net.hp;
+	}
+	else if(b64_decode_exact(str_of(r, "rpRegistKey"), (uint8_t *)ci.regist_key, sizeof(ci.regist_key)) < 0
 		|| b64_decode_exact(str_of(r, "rpKey"), ci.morning, sizeof(ci.morning)) < 0)
 	{
 		reply_err(id, "the pairing is incomplete: pair again");
 		return;
 	}
-	const char *account = str_of(m, "accountId");
-	if(account)
-		b64_decode_exact(account, ci.psn_account_id, CHIAKI_PSN_ACCOUNT_ID_SIZE);
 	int height = int_of(v, "height", 720), fps = int_of(v, "fps", 60);
 	chiaki_connect_video_profile_preset(&ci.video_profile,
 		height >= 1080 ? CHIAKI_VIDEO_RESOLUTION_PRESET_1080p : height >= 720 ? CHIAKI_VIDEO_RESOLUTION_PRESET_720p
@@ -423,6 +530,8 @@ static void do_start(int id, json_object *m)
 	ChiakiErrorCode err = chiaki_session_init(&ses.session, &ci, &clog);
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
+		if(remote)
+			chiaki_holepunch_session_fini(net.hp);
 		reply_err(id, "session: %s", chiaki_error_string(err));
 		return;
 	}
@@ -430,6 +539,24 @@ static void do_start(int id, json_object *m)
 	chiaki_session_set_video_sample_cb(&ses.session, video_cb, NULL);
 	ses.frames = 0;
 	ses.streaming = 0;
+	say("info", "session to %s%s: %ux%u %u fps %s, %u kbps", ses.host, remote ? " over the internet" : "", ci.video_profile.width,
+		ci.video_profile.height, ci.video_profile.max_fps, ci.video_profile.codec == CHIAKI_CODEC_H264 ? "h264" : "h265", ci.video_profile.bitrate);
+	if(remote)
+	{
+		/* the session owns the PSN session from here (chiaki_session_fini ends it) */
+		ses.running = 4;          /* connecting over the internet */
+		if(pthread_create(&net.thread, NULL, net_connect_thread, NULL) != 0)
+		{
+			chiaki_session_fini(&ses.session);
+			ses.running = 0;
+			reply_err(id, "could not start the connecting thread");
+			return;
+		}
+		net.thread_running = 1;
+		session_event("connecting", "over the internet");
+		reply_ok(id, NULL);
+		return;
+	}
 	err = chiaki_session_start(&ses.session);
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
@@ -438,18 +565,118 @@ static void do_start(int id, json_object *m)
 		return;
 	}
 	ses.running = 1;
-	say("info", "session to %s: %ux%u %u fps %s, %u kbps", ses.host, ci.video_profile.width, ci.video_profile.height,
-		ci.video_profile.max_fps, ci.video_profile.codec == CHIAKI_CODEC_H264 ? "h264" : "h265", ci.video_profile.bitrate);
 	session_event("connecting", NULL);
 	reply_ok(id, NULL);
+}
+
+/* ---- PSN: this car's device id (for the sign-in) and the account's consoles ---- */
+static void do_duid(int id)
+{
+	char duid[CHIAKI_DUID_STR_SIZE];
+	size_t size = sizeof(duid);
+	ChiakiErrorCode err = chiaki_holepunch_generate_client_device_uid(duid, &size);
+	if(err != CHIAKI_ERR_SUCCESS)
+	{
+		reply_err(id, "device id: %s", chiaki_error_string(err));
+		return;
+	}
+	json_object *o = json_object_new_object();
+	json_object_object_add(o, "duid", json_object_new_string(duid));
+	reply_ok(id, o);
+}
+
+struct devices_job { int id; char *token; };
+
+static void *devices_thread(void *user)
+{
+	struct devices_job *job = user;
+	json_object *list = json_object_new_array();
+	ChiakiErrorCode first = CHIAKI_ERR_SUCCESS;
+	for(int t = 0; t < 2; t++)
+	{
+		ChiakiHolepunchConsoleType type = t == 0 ? CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS5 : CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS4;
+		ChiakiHolepunchDeviceInfo *devices = NULL;
+		size_t count = 0;
+		ChiakiErrorCode err = chiaki_holepunch_list_devices(job->token, type, &devices, &count, &clog);
+		if(err != CHIAKI_ERR_SUCCESS)
+		{
+			if(t == 0)
+				first = err;
+			continue;
+		}
+		for(size_t i = 0; i < count; i++)
+		{
+			char hex[65];
+			for(int k = 0; k < 32; k++)
+				snprintf(hex + k * 2, 3, "%02x", devices[i].device_uid[k]);
+			json_object *d = json_object_new_object();
+			json_object_object_add(d, "name", json_object_new_string(devices[i].device_name));
+			json_object_object_add(d, "consoleId", json_object_new_string(hex));
+			json_object_object_add(d, "type", json_object_new_string(t == 0 ? "PS5" : "PS4"));
+			json_object_object_add(d, "remotePlay", json_object_new_boolean(devices[i].remoteplay_enabled));
+			json_object_array_add(list, d);
+		}
+		chiaki_holepunch_free_device_list(&devices);
+	}
+	if(first != CHIAKI_ERR_SUCCESS && json_object_array_length(list) == 0)
+	{
+		json_object_put(list);
+		reply_err(job->id, "PSN: the consoles could not be listed (%s): sign in again", chiaki_error_string(first));
+	}
+	else
+	{
+		say("info", "PSN: %d console(s) on the account", (int)json_object_array_length(list));
+		json_object *o = json_object_new_object();
+		json_object_object_add(o, "devices", list);
+		reply_ok(job->id, o);
+	}
+	free(job->token);
+	free(job);
+	return NULL;
+}
+
+static void do_devices(int id, json_object *m)
+{
+	const char *token = str_of(m, "token");
+	if(!token)
+	{
+		reply_err(id, "devices needs a PSN token");
+		return;
+	}
+	struct devices_job *job = calloc(1, sizeof(*job));
+	job->id = id;
+	job->token = strdup(token);
+	pthread_t t;
+	if(pthread_create(&t, NULL, devices_thread, job) != 0)
+	{
+		free(job->token);
+		free(job);
+		reply_err(id, "could not start the PSN request");
+		return;
+	}
+	pthread_detach(t);
 }
 
 static void ses_end(void)
 {
 	if(!ses.running)
 		return;
-	chiaki_session_stop(&ses.session);
-	chiaki_session_join(&ses.session);
+	if(net.thread_running)
+	{
+		/* still connecting over the internet: cancel the PSN steps, wait for the thread */
+		if(ses.running == 4)
+		{
+			net.cancelled = 1;
+			chiaki_holepunch_main_thread_cancel(net.hp, true);
+		}
+		pthread_join(net.thread, NULL);
+		net.thread_running = 0;
+	}
+	if(ses.running != 3)
+	{
+		chiaki_session_stop(&ses.session);
+		chiaki_session_join(&ses.session);
+	}
 	chiaki_session_fini(&ses.session);
 	pthread_mutex_lock(&ses.lock);
 	if(ses.video >= 0)
@@ -531,6 +758,10 @@ static void handle(json_object *m)
 		do_register(id, m);
 	else if(!strcmp(op, "start"))
 		do_start(id, m);
+	else if(!strcmp(op, "duid"))
+		do_duid(id);
+	else if(!strcmp(op, "devices"))
+		do_devices(id, m);
 	else if(!strcmp(op, "stop"))
 	{
 		ses_end();
@@ -580,7 +811,7 @@ int main(int argc, char **argv)
 		struct pollfd p[2] = { { .fd = lfd, .events = POLLIN }, { .fd = client, .events = POLLIN } };
 		int r = poll(p, client >= 0 ? 2 : 1, 250);
 		reg_cleanup();
-		if(ses.running == 2)
+		if(ses.running == 2 || ses.running == 3)
 			ses_end();
 		if(r <= 0)
 			continue;

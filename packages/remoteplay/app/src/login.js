@@ -6,14 +6,17 @@
  *   1. "Sign in with PlayStation" opens Sony's sign-in page (the same one the PlayStation Remote Play app uses).
  *   2. After signing in, Sony's page shows "redirect": its address carries a one-time code. The phone pastes that
  *      address (or just the code) back into this page.
- *   3. The car swaps the code for the account's numeric id at Sony (auth.api.sonyentertainmentnetwork.com) and keeps
- *      only the account id (8 bytes, base64): the console asks for it when the car pairs. No password or token is kept.
+ *   3. The car swaps the code at Sony (auth.api.sonyentertainmentnetwork.com) for the account id (8 bytes, base64: the
+ *      console asks for it when the car pairs) and a refresh token: with it the car gets a fresh access token before
+ *      each game over the internet (PSN finds the console and opens the way through the routers). No password is
+ *      kept; Sign out deletes the token.
  *
  * The page also takes an account id directly (base64), for when the car can't reach Sony.
  *
- *   const s = new SignIn({ log, port: 8890 });
+ *   const s = new SignIn({ log, port: 8890, duid: () => this car's PSN device id (the engine's) or null });
  *   s.start(); s.url()  -> 'http://192.168.x.y:8890/s/<token>' (null without a network)
- *   s.on('account', ({ accountId, onlineId }) => ...)
+ *   s.on('account', ({ accountId, onlineId, refreshToken, duid }) => ...)
+ *   refresh(refreshToken) -> Promise<{ accessToken, refreshToken, expiresAt }>     (Sony rotates the refresh token)
  *
  * A random token in the address keeps other people on the same hotspot out. Node 8: no BigInt (accountIdFromUserId).
  */
@@ -29,9 +32,13 @@ const CLIENT_ID = 'ba495a24-818c-472b-b12d-ff231c1b5745';
 const CLIENT_SECRET = 'mvaiZkRsAsI1IBkY';
 const REDIRECT = 'https://remoteplay.dl.playstation.net/remoteplay/redirect';
 const AUTH_HOST = 'auth.api.sonyentertainmentnetwork.com';
+/* the account, and what play over the internet needs: the console list, PSN's push channel, its Remote Play sessions */
+const SCOPES = 'psn:clientapp referenceDataService:countryConfig.read pushNotification:webSocket.desktop.connect sessionManager:remotePlaySession.system.update';
 const LOGIN_URL = 'https://' + AUTH_HOST + '/2.0/oauth/authorize?service_entity=urn:service-entity:psn&response_type=code' +
-    '&client_id=' + CLIENT_ID + '&redirect_uri=' + encodeURIComponent(REDIRECT) + '&scope=psn:clientapp&request_locale=en_US' +
+    '&client_id=' + CLIENT_ID + '&redirect_uri=' + encodeURIComponent(REDIRECT) + '&scope=' + encodeURIComponent(SCOPES) + '&request_locale=en_US' +
     '&ui=pr&service_logo=ps&layout_type=popup&smcid=remoteplay&prompt=always&PlatformPrivacyWs1=minimal&';
+/* the sign-in address; with this car's device id (the token is then good for PSN's Remote Play sessions) */
+function loginUrl(duid) { return LOGIN_URL + (duid && /^[0-9a-f]{48}$/i.test(duid) ? 'duid=' + duid + '&' : ''); }
 const TOKEN_PATH = '/2.0/oauth/token';
 
 /* "1234567890123456789" (a 64-bit decimal, too big for a double) -> 8 bytes little endian, base64 */
@@ -100,20 +107,45 @@ function request(opts, body) {
     });
 }
 
-/* Sony: the code -> an access token -> the account's user id -> the account id */
-function exchange(code, httpsRequest) {
-    const send = httpsRequest || request;
-    const basic = 'Basic ' + Buffer.from(CLIENT_ID + ':' + CLIENT_SECRET).toString('base64');
-    const body = querystring.stringify({ grant_type: 'authorization_code', code: code, redirect_uri: REDIRECT });
+const BASIC = 'Basic ' + Buffer.from(CLIENT_ID + ':' + CLIENT_SECRET).toString('base64');
+function tokenRequest(send, fields) {
+    const body = querystring.stringify(Object.assign(fields, { scope: SCOPES, redirect_uri: REDIRECT }));
     return send({ host: AUTH_HOST, path: TOKEN_PATH, method: 'POST',
-        headers: { Authorization: basic, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } }, body)
+        headers: { Authorization: BASIC, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } }, body);
+}
+function tokens(r, now) {
+    return { accessToken: r.json.access_token, refreshToken: r.json.refresh_token || null,
+        expiresAt: now + Math.max(60, Number(r.json.expires_in) || 3600) * 1000 };
+}
+
+/* Sony: the code -> tokens -> the account's user id -> the account id */
+function exchange(code, httpsRequest, now) {
+    const send = httpsRequest || request;
+    let t = null;
+    return tokenRequest(send, { grant_type: 'authorization_code', code: code })
         .then((r) => {
             if (r.status !== 200 || !r.json || !r.json.access_token) throw new Error('Sony refused the code (' + r.status + '): ' + (r.json && (r.json.error_description || r.json.error) || 'no token'));
-            return send({ host: AUTH_HOST, path: TOKEN_PATH + '/' + encodeURIComponent(r.json.access_token), method: 'GET', headers: { Authorization: basic } });
+            t = tokens(r, now === undefined ? Date.now() : now);
+            return send({ host: AUTH_HOST, path: TOKEN_PATH + '/' + encodeURIComponent(t.accessToken), method: 'GET', headers: { Authorization: BASIC } });
         })
         .then((r) => {
             if (r.status !== 200 || !r.json || !r.json.user_id) throw new Error('Sony sent no account (' + r.status + ')');
-            return { accountId: accountIdFromUserId(r.json.user_id), onlineId: r.json.online_id || null };
+            return { accountId: accountIdFromUserId(r.json.user_id), onlineId: r.json.online_id || null,
+                refreshToken: t.refreshToken, accessToken: t.accessToken, expiresAt: t.expiresAt };
+        });
+}
+
+/* a fresh access token from the refresh token (before each game over the internet); Sony may send a new refresh token */
+function refresh(refreshToken, httpsRequest, now) {
+    if (!refreshToken) return Promise.reject(new Error('not signed in for play over the internet: sign in again'));
+    return tokenRequest(httpsRequest || request, { grant_type: 'refresh_token', refresh_token: refreshToken })
+        .then((r) => {
+            if (r.status !== 200 || !r.json || !r.json.access_token) {
+                throw new Error('Sony refused the sign-in (' + r.status + ': ' + (r.json && (r.json.error_description || r.json.error) || 'no token') + '): sign in again');
+            }
+            const t = tokens(r, now === undefined ? Date.now() : now);
+            if (!t.refreshToken) t.refreshToken = refreshToken;
+            return t;
         });
 }
 
@@ -139,6 +171,7 @@ class SignIn extends EventEmitter {
         this.log = o.log;
         this.port = o.port || 8890;
         this.exchange = o.exchange || exchange;
+        this.duid = o.duid || (() => null);
         this.token = crypto.randomBytes(6).toString('hex');
         this.server = null;
         this.address = null;
@@ -172,13 +205,17 @@ class SignIn extends EventEmitter {
             const form = querystring.parse(body);
             let work;
             const id = validAccountId(form.accountId);
-            if (id) work = Promise.resolve({ accountId: id, onlineId: null });
+            if (id) work = Promise.resolve({ accountId: id, onlineId: null, refreshToken: null });
             else {
                 const code = codeFrom(form.url);
                 work = code ? this.exchange(code) : Promise.reject(new Error('That has no code in it. Copy the whole address of the page that says "redirect".'));
             }
+            const duid = this.duid();
             work.then((acc) => {
-                this.result = { ok: true, text: 'Signed in' + (acc.onlineId ? ' as ' + acc.onlineId : '') + '. The car has your account; you can close this page.' };
+                acc.duid = acc.refreshToken ? duid : null;
+                this.result = { ok: true, text: 'Signed in' + (acc.onlineId ? ' as ' + acc.onlineId : '') + '. ' +
+                    (acc.refreshToken && duid ? 'The car can now reach your PS5 at home and over the internet' : 'The car can now pair with your PS5 at home') +
+                    '. You can close this page.' };
                 this.log.info('signed in' + (acc.onlineId ? ' as ' + acc.onlineId : '') + ' (account id kept)');
                 this.emit('account', acc);
             }, (err) => {
@@ -191,16 +228,16 @@ class SignIn extends EventEmitter {
     _page() {
         const r = this.result;
         return page('Remote Play: sign in',
-            '<h1>Remote Play in the car</h1><p>Sign in with the PlayStation account you play on. The car keeps only your account\'s number, which the console asks for when it pairs.</p>' +
+            '<h1>Remote Play in the car</h1><p>Sign in with the PlayStation account you play on. The car keeps your account\'s number (the console asks for it when it pairs) and a sign-in token, so it can reach your PS5 over the internet when you\'re away. Your password stays with Sony. <b>Sign out</b> in the car deletes the token.</p>' +
             (r ? '<div class="card ' + (r.ok ? 'ok' : 'err') + '">' + esc(r.text) + '</div>' : '') +
             '<div class="card"><span class="n">1</span><b>Sign in at PlayStation</b>' +
-            '<a class="btn" href="' + esc(LOGIN_URL) + '" target="_blank" rel="noreferrer">Sign in with PlayStation</a></div>' +
+            '<a class="btn" href="' + esc(loginUrl(this.duid())) + '" target="_blank" rel="noreferrer">Sign in with PlayStation</a></div>' +
             '<div class="card"><span class="n">2</span><b>Paste the page it ends on</b><p>After signing in, the page says <i>redirect</i>. Copy its whole address from the address bar and paste it here.</p>' +
             '<form method="post" action="/s/' + this.token + '/code"><textarea name="url" rows="4" placeholder="https://remoteplay.dl.playstation.net/remoteplay/redirect?code=..."></textarea>' +
             '<button type="submit">Send to the car</button></form>' +
-            '<details><summary>I already know my account ID</summary><form method="post" action="/s/' + this.token + '/id">' +
+            '<details><summary>I already know my account ID (play at home only)</summary><form method="post" action="/s/' + this.token + '/id">' +
             '<input name="accountId" placeholder="8 bytes in base64, e.g. AbCdEfGhIjk=" autocomplete="off"><button type="submit">Send to the car</button></form></details></div>');
     }
 }
 
-module.exports = { SignIn, exchange, accountIdFromUserId, codeFrom, validAccountId, localAddress, LOGIN_URL };
+module.exports = { SignIn, exchange, refresh, loginUrl, accountIdFromUserId, codeFrom, validAccountId, localAddress, LOGIN_URL, SCOPES };
