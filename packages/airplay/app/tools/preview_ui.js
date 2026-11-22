@@ -1,6 +1,6 @@
 'use strict';
 /*
- * node packages/airplay/app/tools/preview_ui.js [out.html] [home|pin|mirror|stretch|logs]: the app's drawn screen
+ * node packages/airplay/app/tools/preview_ui.js [out.html] [home|pin|mirror|stretch|wifi|networks|wifipass|logs]: the app's drawn screen
  * (src/ui.js), played back onto a browser canvas the way the renderer draws its ops (Light Logger's player). Open it
  * in a browser. On the car the Mirror screen is transparent right of the band (the video tool's picture shows there);
  * here a stand-in picture is drawn where the video tool would put it, in the shape asked for (its viewFor).
@@ -24,13 +24,23 @@ const ready = {
     engine: { name: 'AirPlay Engine', version: '1.0.0' }, receiver: { on: true, name: 'iDrive' }, enabled: true, access: 'pin', name: 'iDrive',
     video: { tool: true, probe: { decoder: 'v4l2h264dec', hardware: true, sink: 'waylandsink' } }, parked: true, addresses: ['192.168.43.1'],
 };
+const wifiStatus = { ifaces: [
+    { name: 'uap0', kind: 'ap', ssid: 'MyBMW 4821', channel: 36, freq: 5180, up: 'up', state: 'ENABLED', v4: ['192.168.43.1'], v6: ['fe80::a8bb:ccff:fe00:10'], mac: 'aa:bb:cc:00:00:10',
+        control: '/run/hostapd/uap0', clients: [{ mac: '11:22:33:44:55:66', ip: '192.168.43.20', name: 'Annas-iPhone', signal: -47 }] },
+    { name: 'wlan1', kind: 'station', ssid: null, state: 'DISCONNECTED', up: 'down', v4: [], v6: [], mac: 'aa:bb:cc:00:00:11', control: '/run/wpa_supplicant/wlan1', clients: [] }],
+    others: [{ name: 'eth0', v4: ['160.48.199.12'], v6: [] }] };
 const phone = { name: 'Anna\'s iPhone', state: 'mirroring' };
 const models = {
-    home: Object.assign({ view: 'home', aspect: 'fit', phone: null }, ready),
+    home: Object.assign({ view: 'home', aspect: 'fit', phone: null, wifi: { tool: true, status: wifiStatus } }, ready),
     pin: Object.assign({ view: 'home', aspect: 'fit', pin: '4817', phone: { name: 'Anna\'s iPhone', state: 'connecting' } }, ready),
     mirror: { view: 'mirror', aspect: 'fit', phone: phone, mirror: { state: 'playing' } },
     stretch: { view: 'mirror', aspect: 'stretch', phone: phone, mirror: { state: 'playing' } },
     logs: { view: 'logs', logs: sampleLogs, logPage: 0 },
+    wifi: { view: 'wifi', wifi: { tool: true, tab: 'status', status: wifiStatus } },
+    networks: { view: 'wifi', wifi: { tool: true, tab: 'networks', status: wifiStatus, networks: [
+        { ssid: 'Anna\'s iPhone', signal: -41, freq: 2437, secure: true }, { ssid: 'Home-5G', signal: -63, freq: 5180, secure: true },
+        { ssid: 'Garage', signal: -74, freq: 2412, secure: true }, { ssid: 'Cafe Free WiFi', signal: -81, freq: 2462, secure: false }] } },
+    wifipass: { view: 'wifipass', wifi: { tool: true, target: 'Anna\'s iPhone', pass: 'blue-Fox-42', shift: false } },
 };
 const m = Object.assign({ focus: null }, models[variant]);
 const { rec } = ui.draw(new ui.Recorder(), m);

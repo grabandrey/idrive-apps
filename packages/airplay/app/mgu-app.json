@@ -1,11 +1,12 @@
 {
   "schema": 1,
   "id": "ida_airplay",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "tree": "package",
   "modules": [
     "src/ida_airplay.js",
     "src/links.js",
+    "src/frames.js",
     "src/gate.js",
     "src/someip_link.js",
     "src/gpu.js",

@@ -7,7 +7,12 @@
  *   home     the receiver, the phone, the video path, parked or not; the picture's shape; the buttons; the PIN to type
  *   mirror   the phone's screen: the video tool draws it on the head unit's display, in the area right of the band; the
  *            band on the left has the picture's shape (Fit, Stretch, 16:9, ...) and Disconnect
+ *   wifi     the head unit's Wi-Fi: each interface (the car's access point and the devices on it, or the network the
+ *            car is on), the networks around (Scan), Connect and Disconnect
+ *   wifipass a network's password, typed on a keyboard (letters, digits, symbols)
  *   logs     the app's log, newest first
+ *
+ * Without GStreamer (m.soft) the phone's picture is drawn here, from the engine's decoded pictures (PIC_ID).
  */
 const FONT = require('./ui_font.js');
 
@@ -185,6 +190,19 @@ function nextAspect(a) { return ASPECTS[(ASPECTS.indexOf(a) + 1) % ASPECTS.lengt
 /* the Mirror screen: the band on the left (the controls), the phone's screen in the rest */
 const BAND = { x: 0, y: 0, w: 300, h: H };
 const VIDEO = { x: 320, y: 0, w: W - 320, h: H };
+const PIC_ID = 0x41500001;      // the decoded picture (no GStreamer), uploaded again for each one
+
+/* where a picture of size src goes in area in a shape (as the video tool's viewFor): the asked shape, centred and as
+ * large as the area allows; stretch: all of it */
+function shapeRect(area, src, aspect) {
+    const sw = src && src.w > 0 ? src.w : area.w, sh = src && src.h > 0 ? src.h : area.h;
+    const m = /^(\d+):(\d+)$/.exec(aspect || '');
+    if (aspect === 'stretch') return { x: area.x, y: area.y, w: area.w, h: area.h };
+    const r = m ? +m[1] / +m[2] : sw / sh;
+    let w = area.w, h = area.h;
+    if (area.w / area.h > r) w = Math.round(h * r); else h = Math.round(w / r);
+    return { x: Math.round(area.x + (area.w - w) / 2), y: Math.round(area.y + (area.h - h) / 2), w: w, h: h };
+}
 
 /* the shape buttons: a grid of pills, the current one lit */
 function shapes(rec, m, targets, x, y, cols, w, h, gap, style) {
@@ -209,11 +227,13 @@ function home(rec, m, targets) {
     const p = m.phone;
     row(rec, col(1), line(0), 760, 'Phone', p ? p.name + (p.state ? '  ·  ' + p.state : '') : 'None yet', p && p.state === 'mirroring' ? 'ok' : p ? 'warn' : 'none');
     const v = m.video || {};
-    const vtext = !v.tool ? 'Remote Play Video not installed' : !v.probe ? 'Checking the decoders (up to a minute)...' : v.probe.why ? v.probe.why :
+    const vtext = m.soft ? 'Decoded by the engine, drawn here (no GStreamer: fewer frames a second)' : !v.tool ? 'Remote Play Video not installed' :
+        !v.probe ? 'Checking the decoders (up to a minute)...' : v.probe.why ? v.probe.why :
         v.probe.decoder + (v.probe.auto ? ' (the head unit\'s choice)' : v.probe.hardware ? ' (hardware)' : ' (software)') + '  ·  ' + (v.probe.sink || 'no display');
-    row(rec, col(0), line(1), 760, 'Video', vtext, !v.tool ? 'bad' : !v.probe ? 'warn' : v.probe.decoder && v.probe.hardware ? 'ok' : v.probe.decoder ? 'warn' : 'bad');
+    row(rec, col(0), line(1), 760, 'Video', vtext, m.soft ? 'warn' : !v.tool ? 'bad' : !v.probe ? 'warn' : v.probe.decoder && v.probe.hardware ? 'ok' : v.probe.decoder ? 'warn' : 'bad');
     row(rec, col(1), line(1), 760, 'Access', m.access === 'open' ? 'Open: any phone on the network' : 'A PIN the first time a phone connects', m.access === 'open' ? 'warn' : 'ok');
-    row(rec, col(0), line(2), 760, 'Picture shape', aspectLabel(m.aspect) + (m.aspect === 'fit' ? ': the phone\'s own shape' : m.aspect === 'stretch' ? ': the whole screen' : ''), 'ok');
+    const wf = m.wifi || {};
+    row(rec, col(0), line(2), 760, 'Wi-Fi', !wf.tool ? 'AirPlay Wi-Fi not installed' : wifiSummary(wf.status), !wf.tool ? 'none' : wf.status && wf.status.ifaces.length ? 'ok' : 'warn');
     row(rec, col(1), line(2), 760, 'Car', m.parked === true ? 'Parked: mirroring allowed' : m.parked === false ? 'Moving: only while parked' : 'Waiting for the speed', m.parked === true ? 'ok' : m.parked === false ? 'bad' : 'warn');
     rec.text('small', 'ON THE IPHONE OR IPAD', col(0), line(3), C.faint, 'left', 3);
     rec.text('body', fit(rec, 'body', 'The phone on the car\'s Wi-Fi (or the car on the phone\'s hotspot): Control Center > Screen Mirroring > ' + (r.name || m.name || 'iDrive'), 1570), col(0), line(3) + 54, C.text);
@@ -234,18 +254,24 @@ function home(rec, m, targets) {
     } else {
         rec.text('small', 'PICTURE SHAPE', bx, 150, C.faint, 'left', 3);
         shapes(rec, m, targets, bx, 172, 4, 227, 84, 20);
-        const b = (i, j, key, label, o) => pill(rec, m, targets, key, label, bx + j * (bw + gap), 384 + i * (92 + gap), bw, 92, o);
+        const w3 = (bw * 2 + gap - 2 * gap) / 3;
+        const b = (i, j, key, label, o) => pill(rec, m, targets, key, label, bx + j * (w3 + gap), 384 + i * (92 + gap), w3, 92, o);
         b(0, 0, 'apToggle', m.enabled ? 'Receiver off' : 'Receiver on', { fill: m.enabled ? null : C.accent });
-        b(0, 1, 'apAccess', m.access === 'open' ? 'Ask for a PIN' : 'No PIN (open)');
-        b(1, 0, 'apForget', 'Forget phones', { disabled: !e });
+        b(0, 1, 'apAccess', m.access === 'open' ? 'Ask for a PIN' : 'No PIN');
+        b(0, 2, 'apForget', 'Forget phones', { disabled: !e });
+        b(1, 0, 'apWifi', 'Wi-Fi');
         b(1, 1, 'apLogs', 'Logs');
     }
     rec.text('small', 'Not affiliated with Apple. AirPlay, iPhone and iPad are Apple\'s trademarks. Mirroring only while parked.', 90, 700, C.faint);
 }
 
-/* Mirror: transparent where the phone's screen is (the video tool draws it there), the band on the left */
+/* Mirror: transparent where the phone's screen is (the video tool draws it there), the band on the left. Without
+ * GStreamer (m.soft): black, and the engine's newest decoded picture drawn in the shape asked for */
 function mirror(rec, m, targets) {
-    rec.clear(C.clear);
+    if (m.soft) {
+        rec.clear(C.black);
+        if (m.pic) { const r = shapeRect(VIDEO, m.pic, m.aspect); rec.image(PIC_ID, r.x, r.y, r.w, r.h, 0); }
+    } else rec.clear(C.clear);
     rec.rect(BAND.x, BAND.y, BAND.w, BAND.h, C.bg);
     const x = 20, w = BAND.w - 40;
     ASPECTS.forEach((a, i) => {
@@ -284,8 +310,98 @@ function logs(rec, m, targets) {
     pill(rec, m, targets, 'apClose', 'Close', W - 120 - 220, 664, 220, 64);
 }
 
+/* ---- Wi-Fi ---- */
+function kindLabel(i) { return i.kind === 'ap' ? 'access point' : i.kind === 'station' ? (i.state === 'COMPLETED' || i.ssid ? 'connected' : 'not connected') : 'Wi-Fi'; }
+function wifiSummary(st) {
+    if (!st) return 'Looking...';
+    if (!st.ifaces.length) return 'No Wi-Fi interface found';
+    return st.ifaces.map((i) => i.name + ': ' + kindLabel(i) + (i.ssid ? ' "' + i.ssid + '"' : '') +
+        (i.kind === 'ap' ? ' (' + i.clients.length + ' device' + (i.clients.length === 1 ? '' : 's') + ')' : i.v4 && i.v4[0] ? ' ' + i.v4[0] : '')).join('  ·  ');
+}
+function band(f) { return !f ? '' : f >= 5900 ? '6 GHz' : f >= 4900 ? '5 GHz' : '2.4 GHz'; }
+
+/* the lines of the Status tab: each interface, then the devices on an access point */
+function wifiLines(st) {
+    const out = [];
+    (st && st.ifaces || []).forEach((i) => {
+        out.push({ head: true, text: i.name + '  ·  ' + kindLabel(i) + (i.ssid ? '  "' + i.ssid + '"' : '') + (i.channel ? '  ·  channel ' + i.channel : '') + (i.freq ? '  ·  ' + band(i.freq) : '') +
+            (i.signal !== null && i.signal !== undefined && i.kind !== 'ap' ? '  ·  ' + i.signal + ' dBm' : ''), state: i.up === 'up' || i.state === 'COMPLETED' || i.state === 'ENABLED' ? 'ok' : 'warn' });
+        out.push({ text: [(i.v4 || []).join(', '), (i.v6 || []).filter((a) => /^fe80/i.test(a)).join(', '), i.mac, i.control ? 'control ' + i.control : 'no control socket'].filter(Boolean).join('   ') });
+        if (i.kind === 'ap') {
+            if (!i.clients.length) out.push({ text: '    no devices on it' });
+            i.clients.forEach((c) => out.push({ text: '    ' + (c.name || 'device') + '   ' + (c.ip || 'no address') + '   ' + c.mac + (c.signal ? '   ' + c.signal + ' dBm' : '') }));
+        }
+    });
+    if (st && st.others && st.others.length) out.push({ text: 'Other networks: ' + st.others.map((o) => o.name + ' ' + o.v4.concat(o.v6.filter((a) => /^fe80/i.test(a))).join(' ')).join('  ·  ') });
+    return out;
+}
+
+function wifi(rec, m, targets) {
+    const wf = m.wifi || {};
+    rec.text('title', 'Wi-Fi', 90, 86, C.text);
+    if (wf.note) rec.text('body', fit(rec, 'body', wf.note, 1700), 300, 84, wf.warn ? C.orange : C.dim);
+    const S = { x: 90, y: 120, w: 1900, h: 560 };
+    rec.rrect(S.x, S.y, S.w, S.h, 28, C.card);
+    if (!wf.tool) {
+        rec.text('body', 'AirPlay Wi-Fi (ida-airplay-wifi) is not installed or not running.', S.x + 44, S.y + 80, C.dim);
+    } else if (wf.tab === 'networks') {
+        const nets = wf.networks;
+        if (wf.scanning) rec.text('body', 'Scanning with ' + (wf.iface || 'the Wi-Fi') + '...', S.x + 44, S.y + 80, C.dim);
+        else if (!nets) rec.text('body', 'Scan for the networks around the car.', S.x + 44, S.y + 80, C.dim);
+        else if (!nets.length) rec.text('body', 'No networks found.', S.x + 44, S.y + 80, C.dim);
+        else nets.slice(0, 8).forEach((n, i) => {
+            const y = S.y + 24 + i * 66, label = n.ssid + '   ·   ' + n.signal + ' dBm   ·   ' + band(n.freq) + (n.secure ? '   ·   password' : '   ·   open');
+            pill(rec, m, targets, 'apWn_' + i, fit(rec, 'body', label, S.w - 120), S.x + 24, y, S.w - 48, 56, { style: 'body', fill: wf.connecting === n.ssid ? C.accent : null });
+        });
+    } else {
+        const lines = wifiLines(wf.status);
+        if (!wf.status) rec.text('body', 'Asking the Wi-Fi tool...', S.x + 44, S.y + 80, C.dim);
+        lines.slice(0, 11).forEach((l, i) => {
+            const y = S.y + 56 + i * 46;
+            if (l.head) { dot(rec, S.x + 54, y - 12, l.state === 'ok' ? C.green : C.orange); rec.text('body', fit(rec, 'body', l.text, S.w - 140), S.x + 80, y, C.text); }
+            else rec.text('small', fit(rec, 'small', l.text, S.w - 140), S.x + 80, y, C.dim);
+        });
+    }
+    const bx = 2050, bw = W - 90 - bx, bh = 86, g = 18;
+    const st = wf.status, client = st && st.ifaces.filter((i) => i.kind !== 'ap')[0];
+    pill(rec, m, targets, 'apWStatus', 'Status', bx, 120, bw, bh, { fill: wf.tab !== 'networks' ? [33, 43, 64, 255] : null, disabled: !wf.tool });
+    pill(rec, m, targets, 'apWScan', wf.scanning ? 'Scanning...' : 'Scan networks', bx, 120 + (bh + g), bw, bh, { fill: wf.tab === 'networks' ? [33, 43, 64, 255] : null, disabled: !wf.tool || wf.scanning });
+    pill(rec, m, targets, 'apWDisc', client && client.ssid ? 'Disconnect ' + fit(rec, 'body', client.ssid, bw - 240) : 'Disconnect', bx, 120 + 2 * (bh + g), bw, bh, { disabled: !(client && client.ssid) || !!wf.connecting });
+    pill(rec, m, targets, 'apClose', 'Back', bx, 120 + 4 * (bh + g), bw, bh);
+    rec.text('small', fit(rec, 'small', 'Connecting may drop wireless CarPlay for a while.', bw), bx, 120 + 3 * (bh + g) + 50, C.faint);
+}
+
+/* the password keyboard: letters (Shift), digits, a page of symbols */
+const KEYS = { abc: ['1234567890', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'], sym: ['1234567890', '!@#$%^&*()', '-_=+[]{};:', '\'",.<>/?\\|', '`~'] };
+function wifiPass(rec, m, targets) {
+    const wf = m.wifi || {};
+    rec.text('title', 'Password', 90, 86, C.text);
+    rec.text('body', fit(rec, 'body', 'for "' + (wf.target || '') + '"' + (wf.note ? '   ·   ' + wf.note : ''), 1900), 400, 84, wf.warn ? C.orange : C.dim);
+    const pass = wf.pass || '';
+    rec.rrect(90, 116, W - 180, 100, 20, C.card);
+    rec.text('title', pass ? fit(rec, 'title', pass, W - 300) : ' ', 130, 186, C.text);
+    if (!wf.connecting) rec.rect(130 + Math.min(rec.width('title', pass), W - 300) + 6, 136, 4, 60, C.accent);
+    const rows = wf.sym ? KEYS.sym : KEYS.abc, top = 236, kh = 88, g = 12, span = 1700;
+    rows.forEach((row, r) => {
+        const kw = Math.min(150, (span - (row.length - 1) * g) / row.length), rowW = row.length * kw + (row.length - 1) * g, x0 = 90 + (span - rowW) / 2;
+        row.split('').forEach((ch, i) => {
+            const c = wf.shift && !wf.sym ? ch.toUpperCase() : ch;
+            pill(rec, m, targets, 'apKc_' + c, c, x0 + i * (kw + g), top + r * (kh + g), kw, kh, { style: 'title', disabled: !!wf.connecting });
+        });
+    });
+    const sx = 90 + span + 50, sw = W - 90 - sx, half = (sw - g) / 2, k = (i) => top + i * (kh + g);
+    pill(rec, m, targets, 'apKShift', wf.shift ? 'ABC' : 'abc', sx, k(0), half, kh, { style: 'strong', fill: wf.shift ? [33, 43, 64, 255] : null, disabled: !!wf.connecting || !!wf.sym });
+    pill(rec, m, targets, 'apKSym', wf.sym ? 'abc' : '#+=', sx + half + g, k(0), half, kh, { style: 'strong', disabled: !!wf.connecting });
+    pill(rec, m, targets, 'apKSpace', 'Space', sx, k(1), half, kh, { style: 'strong', disabled: !!wf.connecting });
+    pill(rec, m, targets, 'apKDel', 'Delete', sx + half + g, k(1), half, kh, { style: 'strong', disabled: !!wf.connecting });
+    pill(rec, m, targets, 'apKClear', 'Clear', sx, k(2), half, kh, { style: 'strong', disabled: !!wf.connecting });
+    pill(rec, m, targets, 'apWBack', 'Back', sx + half + g, k(2), half, kh, { style: 'strong', disabled: !!wf.connecting });
+    const ready = pass.length >= 8 && !wf.connecting;
+    pill(rec, m, targets, 'apKConnect', wf.connecting ? 'Connecting...' : 'Connect', sx, k(3), sw, kh, { style: 'strong', fill: ready ? C.accent : null, disabled: !ready });
+}
+
 /*
- * model.view: 'home' | 'mirror' | 'logs'; focus, pressed for all. Returns { rec, targets: [{ key, x, y, w, h }] }.
+ * model.view: 'home' | 'mirror' | 'wifi' | 'wifipass' | 'logs'; focus, pressed for all. Returns { rec, targets: [{ key, x, y, w, h }] }.
  */
 function draw(rec, m) {
     rec.reset();
@@ -293,6 +409,8 @@ function draw(rec, m) {
     if (m.view === 'mirror') { mirror(rec, m, targets); return { rec: rec, targets: targets }; }
     rec.clear(C.bg);
     if (m.view === 'logs') logs(rec, m, targets);
+    else if (m.view === 'wifi') wifi(rec, m, targets);
+    else if (m.view === 'wifipass') wifiPass(rec, m, targets);
     else home(rec, m, targets);
     return { rec: rec, targets: targets };
 }
@@ -318,5 +436,5 @@ function toScreen(pl, r) {
         w: Math.round(r.w * pl.scale), h: Math.round(r.h * pl.scale) };
 }
 
-module.exports = { W, H, OP, C, LOG_PER_PAGE, BAND, VIDEO, ASPECTS, Recorder, draw, hit, placement, toScreen, atlas, pack, fit, logPages, logLines, logText,
+module.exports = { W, H, OP, C, LOG_PER_PAGE, BAND, VIDEO, PIC_ID, ASPECTS, KEYS, Recorder, shapeRect, wifiLines, wifiSummary, draw, hit, placement, toScreen, atlas, pack, fit, logPages, logLines, logText,
     aspectLabel, nextAspect };

@@ -2,13 +2,16 @@
 
 An iDrive 8 app and a root tool that make the car an **AirPlay screen-mirroring receiver**. On the iPhone or iPad:
 **Control Center > Screen Mirroring > iDrive**, and the phone's screen appears on the centre screen, decoded by the
-head unit's hardware decoder. An **aspect ratio button** sets the picture's shape: **Fit**, **Stretch**, **16:9**,
-**16:10**, **4:3**, **21:9** or **1:1**, and it changes at once while the phone mirrors.
+head unit's hardware decoder (or, on a head unit without GStreamer, by the engine itself). An **aspect ratio button**
+sets the picture's shape: **Fit**, **Stretch**, **16:9**, **16:10**, **4:3**, **21:9** or **1:1**, and it changes at once
+while the phone mirrors. A **Wi-Fi screen** shows what the car's Wi-Fi is doing and connects it to a network.
 
 | Home | A new phone: the PIN |
 |---|---|
 | ![Home](design/app_home.png) | ![PIN](design/app_pin.png) |
 | ![Mirror, Fit](design/app_mirror.png) | ![Mirror, Stretch](design/app_stretch.png) |
+| ![Wi-Fi](design/app_wifi.png) | ![Wi-Fi networks](design/app_networks.png) |
+| ![Wi-Fi password](design/app_wifipass.png) | |
 
 > **⚠️ Experimental, untested on a car or with an iPhone.** Every part runs and is tested on a desktop: the engine
 > announces itself and answers an iPhone's first request, and the video tool's shapes and restarts are checked with
@@ -24,7 +27,8 @@ head unit's hardware decoder. An **aspect ratio button** sets the picture's shap
 |---|---|
 | `ida_airplay` (app) | The screens, the picture's shape, the PIN, parked-only mirroring |
 | `ida-airplay-engine` (tool, root, **GPL-3.0**) | The AirPlay receiver: announces the car on its Wi-Fi, pairs with the phone, receives its screen. Built on [UxPlay](https://github.com/FDH2/UxPlay)'s AirPlay library |
-| `ida-remoteplay-video` (tool, root) | Remote Play's video tool, 1.2.0 or later: the head unit's GStreamer and **hardware decoder**, now with the shapes |
+| `ida-remoteplay-video` (tool, root) | Remote Play's video tool, 1.3.0 or later: the head unit's GStreamer and **hardware decoder**, with the shapes |
+| `ida-airplay-wifi` (tool, root) | The Wi-Fi screen's tool: the head unit's Wi-Fi through its own wpa_supplicant and hostapd |
 
 ```
 iPhone ──AirPlay (Wi-Fi)──▶ ida-airplay-engine ──H.264──▶ ida-remoteplay-video ──▶ hardware decoder ──▶ the screen
@@ -69,6 +73,32 @@ logs say so: the rectangle alone sets the shape then, which works with displays 
   **Forget phones** makes every phone ask again.
 - **Open** (**No PIN** on Home): any phone on the network can mirror. Everyone on your hotspot can see the car.
 
+### Without GStreamer
+
+Some head units have no GStreamer at all (the Video row says `GStreamer is not on this head unit: no libgstreamer-1.0
+anywhere`). Then the engine decodes the phone's picture itself (FFmpeg's H.264 decoder, built into the engine), scales
+it to at most 1024 pixels a side, and the app draws it through the Renderer, the way it draws its own screens. The
+phone is asked for 720p at 30 fps. It works on any head unit, in every shape, but at fewer frames a second than a
+hardware decoder: fine for maps, photos and menus, not for fast video. The Video row says `Decoded by the engine, drawn
+here`. `"video": "soft"` (or `"hw"`) in `airplay.json` picks one way regardless.
+
+### Wi-Fi
+
+**Wi-Fi** (Home) shows each of the head unit's Wi-Fi interfaces:
+
+- **an access point** (the car's Wi-Fi, the one wireless CarPlay uses, the hotspot): its name, channel and band, its
+  addresses, and **the devices on it** with their names and addresses: whether your iPhone is really on the car's
+  network, and at which address
+- **a client** (an interface that can join another network): the network it's on, the signal, its address
+
+and the head unit's other networks. **Scan networks** lists the networks around the car (strongest first); tap one,
+type its password on the keyboard (letters, **#+=** for symbols), and **Connect** joins it: for example the car on your
+phone's hotspot. **Disconnect** leaves it. Connecting can drop wireless CarPlay for a while.
+
+The tool works through the head unit's own wpa_supplicant (a client) and hostapd (an access point), with their control
+sockets, and `iw` when it's there. When the head unit's Wi-Fi is managed some other way, the screen still shows the
+interfaces and their addresses, and says what it can't do.
+
 ### Sound
 
 Not played. The car's audio belongs to BMW's system, so the phone's sound goes nowhere while it mirrors.
@@ -107,7 +137,8 @@ pip install ziglang                       # and git, make, perl
 packages/airplay/engine/build.sh          # both, or: build.sh x86_64 | aarch64 | native
 ```
 
-`build.sh` clones UxPlay (commit `48f5ce4`), libplist 2.7.0 and OpenSSL 3.0.15, and builds everything with `zig cc`.
+`build.sh` clones UxPlay (commit `48f5ce4`), libplist 2.7.0, OpenSSL 3.0.15 and FFmpeg 7.1.5 (its H.264 decoder and
+scaler only), and builds everything with `zig cc`.
 
 The app talks to it on `/run/ida-airplay-engine/engine.sock`, in JSON lines (see `app/src/links.js`):
 
@@ -146,22 +177,30 @@ stream's shape.
 ```
 app/                       the app (source package, id ida_airplay, built on the head unit)
   src/ida_airplay.js       the app: the receiver on and off, the phone, the PIN, the shape, parked-only mirroring
-  src/ui.js                the drawn screens: home (and the PIN), mirror, logs
-  src/links.js             the video tool's and the engine's sockets (Remote Play's JsonLink)
+  src/ui.js                the drawn screens: home (and the PIN), mirror, Wi-Fi, the password keyboard, logs
+  src/links.js             the video tool's, the engine's and the Wi-Fi tool's sockets (Remote Play's JsonLink)
+  src/frames.js            without GStreamer: the engine's decoded pictures
   src/gate.js              parked or not, from the speed (Remote Play's)
   src/gpu.js, ui_font.js, log_ring.js, someip_link.js
                            Seat Lights' (the same files; the test fails when they differ)
-  tools/test_airplay.js    tests: the screens, the shapes, the links, the package, and the engine (its component,
-                           both programs, and the real x86_64 one answering the app, mDNS and /info)
-  tools/preview_ui.js      design/app_<screen>.html (home | pin | mirror | stretch | logs)
+  tools/test_airplay.js    tests: the screens, the shapes, the links, the pictures, the package, the engine (its
+                           component, both programs, the real x86_64 one answering the app, mDNS, /info and a stand-in
+                           Bonjour daemon), and the Wi-Fi tool (its parsing, and status, scan and connect against a
+                           stand-in head unit)
+  tools/preview_ui.js      design/app_<screen>.html (home | pin | mirror | stretch | wifi | networks | wifipass | logs)
   tools/gen_package.js     the package tree
 engine/                    the root tool (id ida-airplay-engine), GPL-3.0
   engine.c                 the engine: the socket, the receiver, the video out
-  mdns_ifaces.c            the mDNS responder: every private network, each with its own address
+  mdns_ifaces.c            finding the car: the head unit's Bonjour, else its own responder (every network, IPv4 and IPv6)
+  soft_video.c             without GStreamer: the picture decoded (FFmpeg) and handed to the app
   build.sh                 builds bin/<arch>/ida-airplay-engine from upstream sources
   start.sh                 runs the one for this processor
   bin/x86_64, bin/aarch64  the built programs (static)
   LICENSE, licenses/       GPL-3.0; the linked libraries' licences
+wifi/                      the root tool (id ida-airplay-wifi)
+  wifi.js                  status, scan, connect, disconnect, on /run/ida-airplay-wifi/ctl.sock
+  ida-wpactl.c, bin/<arch> a request to a wpa_supplicant / hostapd control socket, for head units without wpa_cli
+                           (build_wpactl.sh)
 ```
 
 Not affiliated with Apple. AirPlay, iPhone and iPad are Apple's trademarks, named here only to say what the app works
