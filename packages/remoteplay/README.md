@@ -32,10 +32,18 @@ fdsrc ! h264parse ! <hardware decoder> ! <display> render-rectangle=<the middle 
 ```
 
 `sync=false` shows each frame as soon as it arrives, so the console sets the frame rate (60 fps), not a clock.
-Decoders are tried in this order: `v4l2h264dec`, `v4l2slh264dec`, `omxh264dec`, `vaapih264dec`, `nvv4l2decoder`,
-`imxvpudec_h264`, … and `avdec_h264` last (software, rarely 60 fps). H.265 is used when the head unit decodes it
-in hardware. Displays are tried in this order: `waylandsink`, `glimagesink`, `kmssink`, … The Home screen shows
-what was found.
+
+**Finding a decoder that works.** Head units often have GStreamer's libraries (their media player uses them) but
+not `gst-launch-1.0`. So the tool ships its own launcher, `ida-gst` (`tool/ida-gst.c`). It loads the head unit's
+`libgstreamer-1.0` at run time, lists every element with its class, and runs pipelines. `gst-launch-1.0` is used
+only when the launcher can't load. Decoders are found by class (`Codec/Decoder/Video[/Hardware]`) and the codec in
+their name, so a vendor's own decoder counts too. Hardware comes first, then GStreamer's rank. A decoder can be
+listed and still not work (no driver, wrong hardware), so **each candidate decodes a short clip** (`tool/samples/`)
+and the first that reaches the end is used. `decodebin` is the last resort: the head unit's own choice.
+H.265 is used when the head unit decodes it in hardware. Displays are tried in this order: `waylandsink`,
+`glimagesink`, `kmssink`, …, then any other video sink. The Home screen shows what was found or, when nothing
+works, why: no GStreamer libraries, no H.264 decoder, or every decoder failing its check. The full list is in
+`/var/opt/ida-remoteplay-video/probe.txt`.
 
 ## Use
 
@@ -46,13 +54,16 @@ what was found.
 2. **Your PS5 at home** (once, on the console): *Settings > System > Remote Play*: **Enable Remote Play** on; and
    *Settings > System > Power Saving > Features Available in Rest Mode*: **Stay Connected to the Internet** and
    **Enable Turning On PS5 from Network** on. Then leave it in rest mode when you go out.
-3. **Video test** (Home): an 8-second moving picture at 1280×720, 60 fps. With an encoder on the head unit, it's
-   encoded and decoded the way a stream is. The result is the frame rate the car really shows. Do this first: it
-   shows whether full frame rate works on your head unit, before any console is involved.
-4. **Sign in**: a QR code. With your phone on the car's hotspot, scan it, tap **Sign in with PlayStation**, sign in
-   at Sony, then copy the address of the page that ends on *redirect* and paste it into the car's page. The car
-   keeps your account's number and a PSN sign-in token (see [Your PSN sign-in](#your-psn-sign-in)). Your
-   password stays with Sony.
+3. **Video test** (Home): a 720p 60 fps clip, decoded by the decoder the game will use and shown as fast as the
+   head unit can. It needs 60 or more for full frame rate (it can say more: "up to 140 fps"). Do this first: it shows
+   whether full frame rate works on your head unit, before any console is involved.
+4. **Sign in**: the car shows a QR code for **Sony's own sign-in page**, so your phone can be on any network
+   (mobile data is fine). Sign in there. The last page says *redirect*, and its address contains `code=...`. On the
+   car, tap **Type the code** and type what comes after `code=`, up to the next `&` (letters are case-sensitive). The
+   car exchanges it at Sony, so the car needs to be online. Codes work once and expire within minutes; if one is
+   refused, sign in on the phone again. The car keeps your account's number and a PSN sign-in token (see
+   [Your PSN sign-in](#your-psn-sign-in)). Your password stays with Sony. The page on the car's hotspot still
+   works too: its address is shown under the steps.
 5. **Find console**: the car asks PSN for the consoles on your account and picks your PS5. The Console row then
    says *at home, over the internet*, and the button says **Play over the internet**. No PIN is needed: over PSN,
    the console pairs itself for each session.
@@ -152,7 +163,9 @@ channel, and Remote Play sessions.
 - Engine: its log is in the journal (`journalctl -u ida-remoteplay-engine`): pairing, the session, and why it ended.
 - Video tool: `/var/opt/ida-remoteplay-video/settings.json` can name the decoder and display, for example
   `{"decoder":{"h264":"omxh264dec"},"sink":"kmssink","sinkProps":"fullscreen=true"}`. Its log is in the journal
-  (`journalctl -u ida-remoteplay-video`): what it found, each pipeline, and the frame rate.
+  (`journalctl -u ida-remoteplay-video`): what it found, each decoder it tried and why it failed, each pipeline, and
+  the frame rate. `/var/opt/ida-remoteplay-video/probe.txt` lists every video element GStreamer has, with its
+  class: the file to look at (or send) if the Home screen says no decoder works.
 
 The sign-in page runs on port 8890 only while the Sign in screen is open. A random token in its address keeps out
 anyone else on the hotspot.
@@ -177,7 +190,9 @@ app/                       the app (source package, id ida_remoteplay, built on 
   tools/preview_ui.js      design/app_<screen>.html (home | signin | pin | play | logs)
   tools/gen_package.js     the package tree
 tool/                      the root tool (id ida-remoteplay-video)
-  video.js                 GStreamer: the probe, the video test, the stream pipeline
+  video.js                 GStreamer: the probe (each decoder checked), the video test, the stream pipeline
+  ida-gst.c, bin/<arch>/   the launcher: the head unit's GStreamer libraries without its tools (build_gst.sh)
+  samples/                 the check clips and the 720p test clip (make_samples.py: an original moving picture)
   gamepad.js               a USB gamepad from /dev/input
 engine/                    the root tool (id ida-remoteplay-engine), AGPL-3.0
   engine.c                 the engine: the socket, pairing, the session, video out, controller in

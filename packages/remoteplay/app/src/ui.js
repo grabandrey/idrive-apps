@@ -5,7 +5,8 @@
  * atlases are Light Logger's (packages/lightlog/app/src/ui.js). Tested and previewed on a desktop.
  *
  *   home     the account, the console, pairing, the engine, the video path, the controller, parked or not; the buttons
- *   signin   a QR code for the sign-in page on the car's hotspot (login.js), and the steps
+ *   signin   a QR code for Sony's sign-in page (the phone on any network), and the steps
+ *   code     the code from Sony's last page, typed on a keyboard
  *   pin      the console's 8-digit pairing PIN, on a keypad
  *   play     the touch controller (pad.js) in the bands beside the game; the middle is left clear for the video,
  *            which the video tool draws on the head unit's display at its own frame rate
@@ -199,10 +200,10 @@ function home(rec, m, targets) {
     const e = m.engine;
     row(rec, col(1), line(1), 760, 'Stream engine', e ? (e.name || 'Engine') + (e.version ? ' ' + e.version : '') : 'Not installed', e ? 'ok' : 'bad');
     const v = m.video || {};
-    const vtext = !v.tool ? 'Video tool not installed' : !v.probe ? 'Checking the head unit...' : !v.probe.decoder ? 'No video decoder found' :
-        v.probe.decoder + (v.probe.hardware ? ' (hardware)' : ' (software)') + '  ·  ' + (v.probe.sink || 'no display');
+    const vtext = !v.tool ? 'Video tool not installed' : !v.probe ? 'Checking the decoders (up to a minute)...' : v.probe.why ? v.probe.why :
+        v.probe.decoder + (v.probe.auto ? ' (the head unit\'s choice)' : v.probe.hardware ? ' (hardware)' : ' (software)') + '  ·  ' + (v.probe.sink || 'no display');
     row(rec, col(0), line(2), 760, 'Video', vtext, !v.tool ? 'bad' : !v.probe ? 'warn' : v.probe.decoder && v.probe.hardware ? 'ok' : v.probe.decoder ? 'warn' : 'bad');
-    const last = v.testing ? 'Running the test...' : v.fps ? v.fps.toFixed(1) + ' fps at ' + v.size + (v.dropped ? ', ' + v.dropped + ' dropped' : '') : 'Not tested';
+    const last = v.testing ? 'Running the test...' : v.fps ? (v.fps > v.target ? 'up to ' : '') + Math.round(v.fps) + ' fps at 1280x720' + (v.fps < v.target * 0.95 ? ' (under ' + v.target + ')' : '') : 'Not tested';
     row(rec, col(1), line(2), 760, 'Video test', last, v.testing ? 'warn' : v.fps ? (v.fps >= v.target * 0.95 ? 'ok' : 'warn') : 'none');
     row(rec, col(0), line(3), 760, 'Controller', m.pad ? m.pad + ' (USB)' : 'Touch controls', m.pad ? 'ok' : 'none');
     row(rec, col(1), line(3), 760, 'Car', m.parked === true ? 'Parked: play allowed' : m.parked === false ? 'Moving: play only while parked' : 'Waiting for the speed', m.parked === true ? 'ok' : m.parked === false ? 'bad' : 'warn');
@@ -236,29 +237,61 @@ function qrCode(rec, q, x, y, size) {
     return s;
 }
 
+/* Sign in: the QR code is Sony's own sign-in page, so the phone can be on any network (mobile data is fine). The code
+ * Sony's last page carries in its address is then typed here (Type the code: the keyboard below). */
 function signIn(rec, m, targets) {
     rec.text('title', 'Sign in', 90, 86, C.text);
-    const s = m.qr ? qrCode(rec, m.qr, 90, 120, 560) : 0;
-    if (!m.qr) { rec.rrect(90, 120, 560, 560, 16, C.card); rec.text('body', 'No network', 370, 410, C.dim, 'center'); }
-    const x = 90 + Math.max(s, 560) + 80;
-    const steps = m.qr ? [
-        ['1', 'Connect your phone to the car\'s Wi-Fi hotspot.'],
-        ['2', 'Scan this code, then tap Sign in with PlayStation.'],
-        ['3', 'After signing in, copy the address of the page that says "redirect"'],
-        ['', 'and paste it into the car\'s page. The car keeps only your account number.'],
-    ] : [
-        ['1', 'Switch on the car\'s Wi-Fi hotspot and connect your phone to it.'],
-        ['2', 'The code appears here once the car has an address on it.'],
+    const size = 640, s = m.qr ? qrCode(rec, m.qr, 90, 112, size) : 0;
+    if (!m.qr) { rec.rrect(90, 112, size, size, 16, C.card); rec.text('body', 'Preparing...', 90 + size / 2, 112 + size / 2, C.dim, 'center'); }
+    const x = 90 + Math.max(s, size) + 80;
+    const steps = [
+        ['1', 'Scan this code with your phone (any network: mobile data is fine).'],
+        ['2', 'Sign in with your PlayStation account on Sony\'s page.'],
+        ['3', 'The last page says "redirect". In its address, find code=... :'],
+        ['', 'the letters and digits after code=, up to the next &.'],
+        ['4', 'Tap Type the code, and type them here.'],
     ];
     steps.forEach((st, i) => {
-        if (st[0]) { rec.rrect(x, 150 + i * 92, 52, 52, 26, C.accent); rec.text('strong', st[0], x + 26, 150 + i * 92 + 40, C.white, 'center'); }
-        rec.text('body', st[1], x + 80, 150 + i * 92 + 38, C.text);
+        const y = 140 + i * 78;
+        if (st[0]) { rec.rrect(x, y, 52, 52, 26, C.accent); rec.text('strong', st[0], x + 26, y + 40, C.white, 'center'); }
+        rec.text('body', st[1], x + 80, y + 38, st[0] ? C.text : C.dim);
     });
-    if (m.url) rec.text('small', m.url, x, 560, C.dim);
-    if (m.account) rec.text('body', 'Signed in' + (m.account.onlineId ? ' as ' + m.account.onlineId : '') + '.', x, 620, C.green);
-    else if (m.note) rec.text('body', fit(rec, 'body', m.note, W - x - 400), x, 620, m.warn ? C.orange : C.dim);
-    if (m.account) pill(rec, m, targets, 'rpSignOut', 'Sign out', W - 120 - 260 - 20 - 260, 664, 260, 64);
-    pill(rec, m, targets, 'rpClose', 'Close', W - 120 - 260, 664, 260, 64);
+    if (m.account) rec.text('body', 'Signed in' + (m.account.onlineId ? ' as ' + m.account.onlineId : '') + (m.internet ? ': at home and over the internet.' : '.'), x, 580, C.green);
+    else if (m.note) rec.text('body', fit(rec, 'body', m.note, W - x - 120), x, 580, m.warn ? C.orange : C.dim);
+    if (m.url) rec.text('small', fit(rec, 'small', 'Or, with the phone on the car\'s hotspot: ' + m.url, W - x - 900), x, 640, C.faint);
+    let bx = W - 120 - 260;
+    pill(rec, m, targets, 'rpClose', 'Close', bx, 664, 260, 64);
+    if (m.account) { bx -= 280; pill(rec, m, targets, 'rpSignOut', 'Sign out', bx, 664, 260, 64); }
+    bx -= 380;
+    pill(rec, m, targets, 'rpCode', 'Type the code', bx, 664, 360, 64, { fill: C.accent, disabled: !m.qr });
+}
+
+/* the code from Sony's address, typed on a keyboard: letters both cases (Shift), digits, . - _ */
+const KEY_ROWS = ['1234567890', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+function codeScreen(rec, m, targets) {
+    rec.text('title', 'Type the code', 90, 86, C.text);
+    rec.text('body', 'From the address of Sony\'s "redirect" page: what comes after code= (letters are case-sensitive).', 640, 84, C.dim);
+    const code = m.code || '';
+    rec.rrect(90, 116, W - 180, 110, 20, C.card);
+    rec.text('title', code ? fit(rec, 'title', code, W - 300) : ' ', 130, 190, C.text);
+    if (!m.signing) rec.rect(130 + Math.min(rec.width('title', code), W - 300) + 6, 140, 4, 64, C.accent);
+    if (m.note) rec.text('body', fit(rec, 'body', m.note, W - 1400), 90, 270, m.warn ? C.orange : C.dim);
+    const kw = 150, kh = 92, g = 14, top = 300;
+    KEY_ROWS.forEach((row, r) => {
+        const rowW = row.length * kw + (row.length - 1) * g, x0 = 90 + (10 * kw + 9 * g - rowW) / 2;
+        row.split('').forEach((ch, i) => {
+            const c = m.shift ? ch.toUpperCase() : ch;
+            pill(rec, m, targets, 'rpKc_' + c, c, x0 + i * (kw + g), top + r * (kh + g), kw, kh, { style: 'title', disabled: m.signing });
+        });
+    });
+    const sx = 90 + 10 * kw + 9 * g + 60, sw = W - 120 - sx, half = (sw - g) / 2;
+    pill(rec, m, targets, 'rpKShift', m.shift ? 'ABC' : 'abc', sx, top, half, kh, { style: 'strong', fill: m.shift ? [33, 43, 64, 255] : null, disabled: m.signing });
+    pill(rec, m, targets, 'rpKDel', 'Delete', sx + half + g, top, half, kh, { style: 'strong', disabled: m.signing });
+    ['.', '-', '_'].forEach((ch, i) => pill(rec, m, targets, 'rpKc_' + ch, ch, sx + i * ((sw - 2 * g) / 3 + g), top + kh + g, (sw - 2 * g) / 3, kh, { style: 'title', disabled: m.signing }));
+    pill(rec, m, targets, 'rpKClear', 'Clear', sx, top + 2 * (kh + g), half, kh, { style: 'strong', disabled: m.signing });
+    pill(rec, m, targets, 'rpClose', 'Back', sx + half + g, top + 2 * (kh + g), half, kh, { style: 'strong', disabled: m.signing });
+    const ready = code.length >= 4 && !m.signing;
+    pill(rec, m, targets, 'rpKSend', m.signing ? 'Signing in...' : 'Sign in', sx, top + 3 * (kh + g), sw, kh, { style: 'strong', fill: ready ? C.accent : null, disabled: !ready });
 }
 
 function pinScreen(rec, m, targets) {
@@ -375,6 +408,7 @@ function draw(rec, m, lay) {
     if (m.view === 'play') { play(rec, m, targets, lay); return { rec: rec, targets: targets }; }
     rec.clear(C.bg);
     if (m.view === 'signin') signIn(rec, m, targets);
+    else if (m.view === 'code') codeScreen(rec, m, targets);
     else if (m.view === 'pin') pinScreen(rec, m, targets);
     else if (m.view === 'logs') logs(rec, m, targets);
     else home(rec, m, targets);

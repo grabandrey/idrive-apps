@@ -26,7 +26,7 @@ test('qr: Reed-Solomon codewords of the standard\'s example', () => {
     eq(qr.ecFor(data, 10), [0xa5, 0x24, 0xd4, 0xc1, 0xed, 0x36, 0xc7, 0x87, 0x2c, 0x55], 'error correction codewords');
 });
 test('qr: sizes, finders, the dark module, capacity', () => {
-    [['a', 1], ['http://192.168.2.1:8890/s/0123456789ab', 3], ['x'.repeat(213), 10]].forEach(([t, v]) => {
+    [['a', 1], ['http://192.168.2.1:8890/s/0123456789ab', 3], ['x'.repeat(213), 10], ['x'.repeat(666), 20]].forEach(([t, v]) => {
         const q = qr.encode(t);
         eq(q.version, v, t.length + ' bytes -> version ' + v);
         eq(q.size, 17 + 4 * v, 'size');
@@ -37,7 +37,7 @@ test('qr: sizes, finders, the dark module, capacity', () => {
         ok(q.get(8, q.size - 8), 'the dark module');
     });
     let threw = false;
-    try { qr.encode('x'.repeat(214)); } catch (e) { threw = true; }
+    try { qr.encode('x'.repeat(667)); } catch (e) { threw = true; }
     ok(threw, 'too long is refused');
     eq(qr.byteCapacity(1), 14, 'v1-M takes 14 bytes');
 });
@@ -276,6 +276,14 @@ test('ui: every screen draws, and only enabled buttons take presses', () => {
     const si = ui.draw(rec, { view: 'signin', qr: qr.encode('http://192.168.43.1:8890/s/0123456789ab'), url: 'http://192.168.43.1:8890/s/0123456789ab' }, lay);
     ok(si.rec.n > 500, 'the QR code is drawn');
     eq(keys({ view: 'pin', pin: '1234' }).filter((k) => /^rpK\d$/.test(k)).length, 10, 'ten digits');
+    const code = keys({ view: 'code', code: 'v3.Ab' });
+    ok(code.indexOf('rpKc_q') >= 0 && code.indexOf('rpKc_.') >= 0 && code.indexOf('rpKSend') >= 0, 'the code keyboard');
+    ok(keys({ view: 'code', code: 'v3.Ab', shift: true }).indexOf('rpKc_Q') >= 0, 'Shift: capitals');
+    ok(keys({ view: 'code', code: 'v3' }).indexOf('rpKSend') < 0, 'too short to send');
+    ok(keys({ view: 'code', code: 'v3.Abcdef', signing: true }).indexOf('rpKSend') < 0, 'not twice');
+    const sq = keys({ view: 'signin', qr: qr.encode(login.loginUrl('0000000700410080' + 'ab'.repeat(16))) });
+    ok(sq.indexOf('rpCode') >= 0, 'sign in: Type the code');
+    ok(qr.encode(login.loginUrl('0000000700410080' + 'ab'.repeat(16))).version <= 20, 'Sony\'s address fits a QR code');
     ok(keys({ view: 'pin', pin: '12345678' }).indexOf('rpKPair') >= 0 && keys({ view: 'pin', pin: '123' }).indexOf('rpKPair') < 0, 'Pair once 8 digits');
     const play = ui.draw(rec, { view: 'play', session: { state: 'streaming' } }, lay);
     eq(play.rec.u[0], ui.OP.CLEAR); eq(play.rec.u[1], 0, 'Play clears to transparent: the video shows through');
@@ -296,9 +304,48 @@ test('video tool: what it picks, the pipelines', () => {
     eq(video.streamPipeline(c, 'h265', null), 'fdsrc fd=0 ! h265parse ! avdec_h265 ! videoconvert ! waylandsink sync=false', 'software: converted');
     eq(video.choose(els, { decoder: { h264: 'avdec_h264' }, sink: 'nope' }).decoders.h264, 'avdec_h264', 'the settings pick');
     eq(video.choose(els, { sinkProps: 'fullscreen=true' }).sinkProps, 'fullscreen=true');
-    ok(/num-buffers=480 .*,framerate=60\/1 ! videoconvert ! waylandsink sync=false$/.test(video.testPipeline(c, { width: 1280, height: 720, fps: 60, seconds: 8 })), 'no encoder: shown directly');
-    const withEnc = video.choose(Object.assign({ v4l2h264enc: true }, els), {});
-    ok(/ ! v4l2h264enc ! h264parse ! v4l2h264dec ! /.test(video.testPipeline(withEnc, { width: 1280, height: 720, fps: 60, seconds: 8 })), 'an encoder: through the decoder');
+    ok(/num-buffers=480 .*,framerate=60\/1 ! videoconvert ! waylandsink sync=false$/.test(video.testPipeline(c, { width: 1280, height: 720, fps: 60, seconds: 8 })), 'no clip: the display alone');
+    eq(video.testPipeline(c, { sample: '/x/test.h264' }), 'filesrc location=/x/test.h264 ! h264parse ! v4l2h264dec ! videoconvert ! waylandsink sync=false', 'the clip, through the decoder');
+});
+test('video tool: decoders by what GStreamer says they are, decodebin last, why not', () => {
+    const p = video.parseProbe('version 1.20.3\nelement\tmfxhevcdec\t256\tCodec/Decoder/Video/Hardware\nelement\tavdec_h264\t256\tCodec/Decoder/Video\n' +
+        'element\tvendorh264vdec\t257\tCodec/Decoder/Video/Hardware\nelement\th264parse\t257\tCodec/Parser/Converter/Video\n' +
+        'element\tx264enc\t128\tCodec/Encoder/Video\nelement\tvaapidecode\t256\tCodec/Decoder/Video/Hardware\nelement\tvendorsink\t300\tSink/Video\n' +
+        'element\tdecodebin\t0\tGeneric/Bin/Decoder\nelement\tvideoconvert\t0\tFilter/Converter/Video\n');
+    eq(p.version, '1.20.3');
+    eq(video.decodersFor(p.elements, 'h264'), ['vendorh264vdec', 'vaapidecode', 'avdec_h264'], 'a vendor\'s own name, by klass; hardware first, by rank');
+    eq(video.decodersFor(p.elements, 'h265'), ['mfxhevcdec', 'vaapidecode'], 'hevc in the name counts as H.265');
+    const c = video.choose(p.elements, {});
+    eq([c.decoders.h264, c.hardware, c.sink, c.encoder], ['vendorh264vdec', true, 'vendorsink', 'x264enc'], 'a vendor sink when there\'s no known one');
+    const onlyBin = video.choose(video.parseProbe('version 1.16.0\nelement\tdecodebin\t0\tGeneric/Bin/Decoder\nelement\twaylandsink\t0\tSink/Video\n').elements, {});
+    eq([onlyBin.decoders.h264, onlyBin.auto, onlyBin.hardware], ['decodebin', true, false], 'no decoder by name: decodebin, the head unit\'s choice');
+    eq(video.streamPipeline(Object.assign({}, onlyBin, { converter: 'videoconvert' }), 'h264', null), 'fdsrc fd=0 ! h264parse ! decodebin ! videoconvert ! waylandsink sync=false');
+    ok(/no H\.264 decoder/.test(video.whyNot({ gst: '1.20.3', elements: 400, decoder: null, sink: 'waylandsink' })), 'why: no decoder');
+    ok(/not on this head unit/.test(video.whyNot({ gst: null })), 'why: no GStreamer');
+    eq(video.whyNot({ gst: '1', decoder: 'x', sink: 'y' }), null);
+});
+test('video tool: the launcher and the clips', () => {
+    const comp = JSON.parse(fs.readFileSync(path.join(TOOL, 'component.json'), 'utf8'));
+    [['x86_64', 62], ['aarch64', 183]].forEach(([arch, machine]) => {
+        const rel = 'bin/' + arch + '/ida-gst', b = fs.readFileSync(path.join(TOOL, rel));
+        ok(b.slice(0, 4).toString('latin1') === '\x7fELF' && b.readUInt16LE(18) === machine, rel + ' is for ' + arch);
+        eq(comp.files.filter((f) => f.from === rel)[0].mode, '0755', rel + ' is executable');
+    });
+    ['check.h264', 'check.h265', 'test720p60.h264'].forEach((f) => {
+        const b = fs.readFileSync(path.join(TOOL, 'samples', f));
+        ok(b.readUInt32BE(0) === 1 || b.readUInt32BE(0) >>> 8 === 1, f + ' is Annex B');
+        ok(comp.files.some((x) => x.from === 'samples/' + f), f + ' is installed');
+    });
+    // the real launcher, where GStreamer is installed (as here): probe, a clip to the end, an error
+    if (process.arch !== 'x64' || process.platform !== 'linux') return;
+    const cp = require('child_process'), bin = path.join(TOOL, 'bin/x86_64/ida-gst');
+    const probe = cp.spawnSync(bin, ['probe'], { encoding: 'utf8', timeout: 30000 });
+    if (!/^version /.test(probe.stdout || '')) return;            // no GStreamer on this machine
+    ok(/\belement\tfilesrc\t/.test(probe.stdout), 'probe lists elements');
+    const run = cp.spawnSync(bin, ['launch', 'filesrc', 'location=' + path.join(TOOL, 'samples/check.h264'), '!', 'h264parse', '!', 'fakesink'], { encoding: 'utf8', timeout: 30000 });
+    ok(run.status === 0 && /Got EOS/.test(run.stdout), 'a clip plays to the end: exit 0');
+    const bad = cp.spawnSync(bin, ['launch', 'nosuchelement', '!', 'fakesink'], { encoding: 'utf8', timeout: 10000 });
+    ok(bad.status === 1 && /ERROR: the pipeline/.test(bad.stdout), 'a bad pipeline: exit 1 at once');
     eq(video.args('a ! b c=<1,2,3,4>  d'), ['a', '!', 'b', 'c=<1,2,3,4>', 'd']);
 });
 test('video tool: pictures counted in a stream, across chunks', () => {

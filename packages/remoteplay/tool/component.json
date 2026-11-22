@@ -1,7 +1,7 @@
 {
   "id": "ida-remoteplay-video",
   "kind": "tool",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "Remote Play Video",
   "description": "The video and gamepad half of Remote Play: shows the console's stream on the car's screen at its full frame rate through the head unit's own hardware decoder (GStreamer), and reads a USB gamepad plugged into the car. Used by the Remote Play app. EXPERIMENTAL, untested on a car.",
   "optional": true,
@@ -12,7 +12,12 @@
   },
   "files": [
     { "path": "video.js", "from": "video.js", "mode": "0644" },
-    { "path": "gamepad.js", "from": "gamepad.js", "mode": "0644" }
+    { "path": "gamepad.js", "from": "gamepad.js", "mode": "0644" },
+    { "path": "bin/x86_64/ida-gst", "from": "bin/x86_64/ida-gst", "mode": "0755" },
+    { "path": "bin/aarch64/ida-gst", "from": "bin/aarch64/ida-gst", "mode": "0755" },
+    { "path": "samples/check.h264", "from": "samples/check.h264", "mode": "0644" },
+    { "path": "samples/check.h265", "from": "samples/check.h265", "mode": "0644" },
+    { "path": "samples/test720p60.h264", "from": "samples/test720p60.h264", "mode": "0644" }
   ],
   "units": [
     { "name": "ida-remoteplay-video.service", "from": "ida-remoteplay-video.service" }

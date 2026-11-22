@@ -1,3 +1,6 @@
 * text=auto eol=lf
 *.png binary
 ida-rp-engine binary
+ida-gst binary
+*.h264 binary
+*.h265 binary
