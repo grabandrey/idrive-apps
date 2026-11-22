@@ -7,11 +7,20 @@
  * Control socket /run/ida-remoteplay-video/ctl.sock (0666; the app runs as its own user), JSON lines, one reply per
  * request ("id" echoed), events ("ev") at any time; see the app's links.js for the messages.
  *
- * Stream socket /run/ida-remoteplay-video/stream.sock: the stream engine connects, writes one JSON line
- *   {"codec":"h264"|"h265","width":1280,"height":720,"fps":60,"rect":{x,y,w,h}}
+ * Stream socket /run/ida-remoteplay-video/stream.sock: a stream engine (Remote Play's, AirPlay's) connects, writes one
+ * JSON line
+ *   {"codec":"h264"|"h265","width":1280,"height":720,"fps":60,"rect":{x,y,w,h},"aspect":"fit"}
  * then the video as an Annex B elementary stream. Each connection is one pipeline:
- *   fdsrc ! <parser> ! <decoder> ! [videoconvert !] <sink> sync=false
- * sync=false: frames show as they arrive (a game stream has no clock to keep), so the rate is the console's.
+ *   fdsrc ! <parser> ! [capssetter !] <decoder> ! [videoconvert !] <sink> sync=false
+ * sync=false: frames show as they arrive (a game stream has no clock to keep), so the rate is the source's.
+ *
+ * The picture's shape ("aspect"; without it the picture goes in rect as before): fit (its own shape, as large as rect
+ * allows), stretch (all of rect), or a ratio "16:9", "4:3", ... (that shape, as large as rect allows). The picture
+ * goes in a rectangle of that shape inside rect (render-rectangle), and its pixel aspect ratio is set to match
+ * (capssetter, where GStreamer has it), so a display that keeps the picture's shape fills that rectangle too.
+ * {"op":"view","aspect":"4:3"} on the control socket changes it while the stream plays: the pipeline starts again and
+ * is given the stream from its last keyframe (StreamKeeper), so the picture comes back at once. A stream whose size
+ * changes (a phone turned on its side) starts again the same way, in its new shape.
  *
  * Which decoder and display: probed at start (gst-inspect-1.0), hardware first; settings.json can name them:
  *   /var/opt/ida-remoteplay-video/settings.json  {"decoder":{"h264":"v4l2h264dec"},"sink":"waylandsink","sinkProps":"fullscreen=true"}
@@ -25,7 +34,7 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { Gamepads } = require('./gamepad.js');
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const RUN = process.env.RPV_RUN || '/run/ida-remoteplay-video';
 const CTL = path.join(RUN, 'ctl.sock');
 const STREAM = path.join(RUN, 'stream.sock');
@@ -46,6 +55,9 @@ const SOFTWARE = /^(avdec_|openh264dec|libde265dec|ffdec_|dav1d)/;
 const CODEC = { h264: /264|avc/i, h265: /265|hevc/i };
 const PARSERS = { h264: 'h264parse', h265: 'h265parse' };
 const ENCODERS = ['v4l2h264enc', 'omxh264enc', 'vaapih264enc', 'vah264enc', 'msdkh264enc', 'qsvh264enc', 'imxvpuenc_h264', 'vpuenc_h264', 'x264enc', 'openh264enc'];
+/* the shapes a stream can be shown in ("W:H" works for any ratio) */
+const ASPECTS = ['fit', 'stretch', '16:9', '16:10', '4:3', '21:9', '1:1'];
+const KEEP_BYTES = 24 * 1024 * 1024;   // the stream kept from its last keyframe, at most (past that: from its SPS/PPS)
 const SINKS = ['waylandsink', 'glimagesink', 'kmssink', 'ximagesink', 'fbdevsink', 'autovideosink'];
 /* the launcher shipped with the tool (ida-gst.c): the head unit's GStreamer libraries, without gst-launch-1.0 */
 const ARCH = { x64: 'x86_64', arm64: 'aarch64' }[process.arch] || process.arch;
@@ -148,6 +160,7 @@ function choose(elements, settings) {
         sink: forced(settings.sink) || sinks[0] || null,
         sinkProps: settings.sinkProps || '',
         converter: has('videoconvert') ? 'videoconvert' : null,
+        capssetter: has('capssetter'),
     };
 }
 
@@ -168,11 +181,166 @@ function sinkPart(c, rect) {
     }
     return sink + ' sync=false';
 }
-function streamPipeline(c, codec, rect) {
+/* par: [n, d], the pixel aspect ratio the picture is given (capssetter, before the decoder: decoders pass it on) */
+function streamPipeline(c, codec, rect, par) {
     const dec = c.decoders[codec];
     if (!dec) return null;
     const conv = (SOFTWARE.test(dec) || dec === 'decodebin') && c.converter ? ' ! ' + c.converter : '';
-    return 'fdsrc fd=0 ! ' + PARSERS[codec] + ' ! ' + dec + conv + ' ! ' + sinkPart(c, rect);
+    const shape = par && c.capssetter ? ' ! capssetter caps=video/x-' + codec + ',pixel-aspect-ratio=' + par[0] + '/' + par[1] : '';
+    return 'fdsrc fd=0 ! ' + PARSERS[codec] + shape + ' ! ' + dec + conv + ' ! ' + sinkPart(c, rect);
+}
+
+function gcd(a, b) { while (b) { const t = a % b; a = b; b = t; } return a; }
+
+/* the aspect a stream asks for: one of ASPECTS or "W:H", else null (the old behaviour: rect as given) */
+function aspectOf(a) {
+    if (typeof a !== 'string') return null;
+    a = a.trim().toLowerCase();
+    if (a === 'fit' || a === 'stretch') return a;
+    const m = /^(\d{1,4})[:/x](\d{1,4})$/.exec(a);
+    return m && +m[1] > 0 && +m[2] > 0 ? (+m[1]) + ':' + (+m[2]) : null;
+}
+
+/* where the picture goes and the pixel aspect ratio it's given, for an area (screen px), the picture's size and an
+ * aspect: { rect, par: [n, d] | null, ratio }. The rectangle has the asked shape, centred and as large as the area
+ * allows; par makes the picture that shape (null: its own) */
+function viewFor(area, src, aspect) {
+    if (!area || !(area.w > 0 && area.h > 0)) return { rect: area || null, par: null, ratio: null };
+    const sw = src && src.width > 0 ? src.width : area.w, sh = src && src.height > 0 ? src.height : area.h;
+    const a = aspectOf(aspect) || 'fit';
+    const m = /^(\d+):(\d+)$/.exec(a);
+    const r = a === 'stretch' ? area.w / area.h : m ? +m[1] / +m[2] : sw / sh;
+    let w = area.w, h = area.h;
+    if (a !== 'stretch') { if (area.w / area.h > r) w = Math.round(h * r); else h = Math.round(w / r); }
+    const rect = { x: Math.round(area.x + (area.w - w) / 2), y: Math.round(area.y + (area.h - h) / 2), w: w, h: h };
+    let n = w * sh, d = h * sw;
+    const g = gcd(n, d) || 1;
+    n /= g; d /= g;
+    // the picture's own shape (within a pixel): leave it be
+    const par = a === 'fit' || Math.abs(n / d - 1) < 0.002 ? null : [n, d];
+    return { rect: rect, par: par, ratio: a };
+}
+
+/* ---- H.264 sequence parameter set: the picture's size ---- */
+function unescape(b) {
+    const out = [];
+    for (let i = 0; i < b.length; i++) {
+        if (i >= 2 && b[i] === 3 && b[i - 1] === 0 && b[i - 2] === 0 && out.length >= 2 && out[out.length - 1] === 0 && out[out.length - 2] === 0) continue;
+        out.push(b[i]);
+    }
+    return out;
+}
+class Bits {
+    constructor(b) { this.b = b; this.p = 0; }
+    u(n) { let v = 0; for (let i = 0; i < n; i++) { const byte = this.b[this.p >> 3]; if (byte === undefined) throw new Error('short'); v = v * 2 + ((byte >> (7 - (this.p & 7))) & 1); this.p++; } return v; }
+    ue() { let z = 0; while (this.u(1) === 0) { if (++z > 31) throw new Error('bad'); } return z ? Math.pow(2, z) - 1 + this.u(z) : 0; }
+    se() { const k = this.ue(); return k & 1 ? (k + 1) / 2 : -k / 2; }
+}
+/* nal: the NAL unit without its start code (header byte first) -> { width, height } | null */
+function spsSize(nal) {
+    try {
+        const r = new Bits(unescape(nal.slice(1)));
+        const profile = r.u(8);
+        r.u(16); r.ue();
+        let chroma = 1;
+        if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].indexOf(profile) >= 0) {
+            chroma = r.ue();
+            if (chroma === 3) r.u(1);
+            r.ue(); r.ue(); r.u(1);
+            if (r.u(1)) {
+                for (let i = 0; i < (chroma !== 3 ? 8 : 12); i++) {
+                    if (!r.u(1)) continue;
+                    let last = 8, next = 8;
+                    for (let j = 0; j < (i < 6 ? 16 : 64); j++) { if (next) next = (last + r.se() + 256) % 256; last = next || last; }
+                }
+            }
+        }
+        r.ue();
+        const poc = r.ue();
+        if (poc === 0) r.ue();
+        else if (poc === 1) { r.u(1); r.se(); r.se(); const n = r.ue(); for (let i = 0; i < n; i++) r.se(); }
+        r.ue(); r.u(1);
+        const wMbs = r.ue() + 1, hMap = r.ue() + 1, frameOnly = r.u(1);
+        if (!frameOnly) r.u(1);
+        r.u(1);
+        let cl = 0, cr = 0, ct = 0, cb = 0;
+        if (r.u(1)) { cl = r.ue(); cr = r.ue(); ct = r.ue(); cb = r.ue(); }
+        const cx = chroma === 1 || chroma === 2 ? 2 : 1, cy = (chroma === 1 ? 2 : 1) * (2 - frameOnly);
+        const width = wMbs * 16 - (cl + cr) * cx, height = (2 - frameOnly) * hMap * 16 - (ct + cb) * cy;
+        return width > 0 && height > 0 ? { width: width, height: height } : null;
+    } catch (e) { return null; }
+}
+
+/* the stream as it goes by, kept from its last keyframe (with the SPS/PPS before it), so a pipeline started again
+ * mid-stream (a new aspect, a new size) is given a whole picture at once; and the picture's size from each SPS.
+ *   push(chunk) -> { size: {width,height} | null when it changed }      replay() -> Buffer */
+class StreamKeeper {
+    constructor(codec, o) {
+        this.h265 = codec === 'h265';
+        this.max = (o && o.maxBytes) || KEEP_BYTES;
+        this.pending = Buffer.alloc(0);     // from the last start code on: the NAL still arriving
+        this.sps = null; this.pps = null; this.vps = null;
+        this.gop = null; this.bytes = 0; this.idr = false;
+        this.size = null;
+    }
+    _type(n) { return this.h265 ? (n[0] >> 1) & 63 : n[0] & 31; }
+    _keep(nal) {
+        if (!this.gop) return;
+        this.gop.push(nal); this.bytes += nal.length;
+        if (this.bytes > this.max) { this.gop = null; this.bytes = 0; }
+    }
+    _nal(withCode) {
+        let i = 0;
+        while (withCode[i] === 0) i++;
+        const n = withCode.slice(i + 1);
+        if (!n.length) return null;
+        const t = this._type(n);
+        let changed = null;
+        const param = this.h265 ? (t === 32 || t === 33 || t === 34) : (t === 7 || t === 8);
+        const sps = this.h265 ? t === 33 : t === 7, pps = this.h265 ? t === 34 : t === 8;
+        const idr = this.h265 ? (t >= 16 && t <= 21) : t === 5;
+        if (this.h265 && t === 32) { this.vps = withCode; this.gop = [withCode]; this.bytes = withCode.length; this.idr = false; return null; }
+        if (sps) {
+            this.sps = withCode;
+            if (!this.h265 || !this.gop || this.idr) { this.gop = [withCode]; this.bytes = withCode.length; this.idr = false; }
+            else this._keep(withCode);
+            const s = this.h265 ? null : spsSize(n);
+            if (s && (!this.size || s.width !== this.size.width || s.height !== this.size.height)) { this.size = s; changed = s; }
+            return changed;
+        }
+        if (pps) { this.pps = withCode; if (this.gop && !this.idr) this._keep(withCode); return null; }
+        if (idr) {
+            const first = this.h265 ? (n[2] & 0x80) : (n[1] & 0x80);
+            if (first && (this.idr || !this.gop)) {
+                this.gop = [this.vps, this.sps, this.pps].filter(Boolean);
+                this.bytes = this.gop.reduce((a, b) => a + b.length, 0);
+            }
+            this.idr = true;
+            this._keep(withCode);
+            return null;
+        }
+        if (!param) this._keep(withCode);
+        return null;
+    }
+    push(chunk) {
+        const b = this.pending.length ? Buffer.concat([this.pending, chunk]) : chunk;
+        let start = -1, size = null;
+        for (let i = 0; i + 2 < b.length; i++) {
+            if (b[i] !== 0 || b[i + 1] !== 0 || b[i + 2] !== 1) continue;
+            const at = i > 0 && b[i - 1] === 0 ? i - 1 : i;
+            if (start >= 0 && at > start) { const s = this._nal(b.slice(start, at)); if (s) size = s; }
+            start = at;
+            i += 2;
+        }
+        // no start code yet: keep everything (a stream starts with one); a NAL far too long is not kept
+        this.pending = start >= 0 ? b.slice(start) : b;
+        if (this.pending.length > this.max) this.pending = Buffer.alloc(0);
+        return { size: size };
+    }
+    replay() {
+        const head = this.gop || [this.vps, this.sps, this.pps].filter(Boolean);
+        return Buffer.concat(head.concat([this.pending]));
+    }
 }
 /* the test: the 720p, 60 fps clip decoded and shown as fast as the head unit can (sync=false), through the decoder the
  * stream will use: frames over the time from PLAYING to the end is the rate the car can really show (it may be over 60).
@@ -371,6 +539,7 @@ class VideoTool {
     _handle(m) {
         if (m.op === 'probe') return (m.again || !this.probe ? this._probe() : Promise.resolve(this.probe)).then((p) => Object.assign({ version: VERSION }, p));
         if (m.op === 'stop') { this._stop('asked'); return Promise.resolve({}); }
+        if (m.op === 'view') return this._view(m);
         if (m.op === 'status') return Promise.resolve({ running: this.what, stats: this.stats });
         if (m.op === 'test') {
             const p = this.probe;
@@ -433,9 +602,9 @@ class VideoTool {
 
     /* the engine's video: a header line, then the elementary stream straight into the decoder */
     _stream(s) {
-        let head = Buffer.alloc(0), proc = null;
+        let head = Buffer.alloc(0), live = null;
         s.on('data', (d) => {
-            if (proc) return;
+            if (live) return;
             head = Buffer.concat([head, d]);
             const nl = head.indexOf(10);
             if (nl < 0) { if (head.length > 4096) s.destroy(); return; }
@@ -443,26 +612,84 @@ class VideoTool {
             try { h = JSON.parse(head.slice(0, nl).toString('utf8')); } catch (e) { log('warn', 'stream: bad header'); s.destroy(); return; }
             const rest = head.slice(nl + 1);
             const codec = h.codec === 'h265' ? 'h265' : 'h264';
-            const pl = this.probe && this.probe.gst ? streamPipeline(this.probe, codec, h.rect) : null;
-            if (!pl) { log('warn', 'stream: no ' + codec + ' decoder'); s.destroy(); return; }
-            const fps = clamp(h.fps, 10, 120, 60);
-            proc = this._run('stream', pl, { input: true, fps: fps });
-            const st = this.stats, count = new FrameCounter(codec);
-            let last = 0, lastAt = Date.now();
-            st.timer = setInterval(() => {
-                const now = Date.now(), n = count.frames - last;
-                st.fps = n / ((now - lastAt) / 1000); st.frames = count.frames;
-                last = count.frames; lastAt = now;
-                this._broadcast({ ev: 'video', what: 'stream', state: 'playing', fps: st.fps, frames: st.frames, target: fps });
-            }, 1000);
+            if (!(this.probe && this.probe.gst && streamPipeline(this.probe, codec, null))) { log('warn', 'stream: no ' + codec + ' decoder'); s.destroy(); return; }
+            live = this.live = {
+                sock: s, codec: codec, fps: clamp(h.fps, 10, 120, 60), area: h.rect || null, aspect: aspectOf(h.aspect),
+                size: h.width > 0 && h.height > 0 ? { width: h.width | 0, height: h.height | 0 } : null,
+                keeper: new StreamKeeper(codec), count: new FrameCounter(codec), proc: null, view: null,
+            };
             s.removeAllListeners('data');
-            const feed = (chunk) => { count.push(chunk); if (!proc.stdin.write(chunk)) { s.pause(); proc.stdin.once('drain', () => s.resume()); } };
+            this._launch(live, null);
+            const feed = (chunk) => {
+                live.count.push(chunk);
+                const ev = live.keeper.push(chunk);
+                if (ev.size && live.aspect && (!live.size || ev.size.width !== live.size.width || ev.size.height !== live.size.height)) {
+                    live.size = ev.size;
+                    this._launch(live, 'the picture is now ' + ev.size.width + 'x' + ev.size.height);   // it's given the replay, this chunk included
+                    return;
+                }
+                if (ev.size) live.size = ev.size;
+                this._write(live, chunk);
+            };
             if (rest.length) feed(rest);
             s.on('data', feed);
-            proc.stdin.on('error', () => s.destroy());
         });
         s.on('error', () => { /* gone */ });
-        s.on('close', () => { if (proc && this.proc === proc) this._stop('stream closed'); });
+        s.on('close', () => {
+            if (!live) return;
+            if (this.live === live) this.live = null;
+            if (live.proc && this.proc === live.proc) this._stop('stream closed');
+        });
+    }
+
+    _write(live, buf) {
+        const proc = live.proc;
+        if (!proc || !buf.length) return;
+        if (!proc.stdin.write(buf)) { live.sock.pause(); proc.stdin.once('drain', () => live.sock.resume()); }
+    }
+
+    /* the stream's pipeline, (again) in the shape asked for: a pipeline started again mid-stream is given the stream
+     * from its last keyframe, so the picture comes back at once */
+    _launch(live, why) {
+        const v = live.aspect ? viewFor(live.area, live.size, live.aspect) : { rect: live.area, par: null, ratio: null };
+        const pl = streamPipeline(this.probe, live.codec, v.rect, v.par);
+        const old = live.proc;
+        if (old) {
+            log('info', 'stream: again (' + why + ')');
+            clearInterval(this.stats && this.stats.timer);
+            this.proc = null;                // its end is not the stream's end
+            try { old.stdin.end(); } catch (e) { /* closed */ }
+            try { old.kill('SIGINT'); } catch (e) { /* gone */ }
+            setTimeout(() => { try { old.kill('SIGKILL'); } catch (e) { /* gone */ } }, 1500);
+        }
+        if (v.par && !this.probe.capssetter) log('warn', 'stream: no capssetter here: a display that keeps the picture\'s own shape shows it ' + (live.aspect === 'fit' ? '' : 'in its own shape ') + 'inside ' + JSON.stringify(v.rect));
+        const proc = this._run('stream', pl, { input: true, fps: live.fps });
+        live.proc = proc;
+        live.view = v;
+        proc.stdin.on('error', () => { if (live.proc === proc) live.sock.destroy(); });
+        if (old) this._write(live, live.keeper.replay());
+        const st = this.stats, count = live.count;
+        let last = count.frames, lastAt = Date.now();
+        st.timer = setInterval(() => {
+            const now = Date.now(), n = count.frames - last;
+            st.fps = n / ((now - lastAt) / 1000); st.frames = count.frames;
+            last = count.frames; lastAt = now;
+            this._broadcast({ ev: 'video', what: 'stream', state: 'playing', fps: st.fps, frames: st.frames, target: live.fps });
+        }, 1000);
+        this._broadcast({ ev: 'video', what: 'stream', state: 'view', aspect: live.aspect, rect: v.rect, par: v.par, size: live.size, exact: !v.par || !!this.probe.capssetter });
+    }
+
+    /* {"op":"view","aspect","rect"}: the playing stream in a new shape (or place) */
+    _view(m) {
+        const live = this.live;
+        if (m.aspect !== undefined && m.aspect !== null && !aspectOf(m.aspect)) return Promise.reject(new Error('unknown aspect ' + m.aspect));
+        if (!live || !live.proc) return Promise.resolve({ playing: false });
+        const aspect = m.aspect ? aspectOf(m.aspect) : live.aspect, area = m.rect || live.area;
+        if (aspect !== live.aspect || JSON.stringify(area) !== JSON.stringify(live.area)) {
+            live.aspect = aspect; live.area = area;
+            this._launch(live, 'shown ' + (aspect || 'as given'));
+        }
+        return Promise.resolve({ playing: true, aspect: live.aspect, view: live.view, size: live.size });
     }
 }
 
@@ -475,4 +702,5 @@ if (require.main === module) {
     new VideoTool().start();
 }
 
-module.exports = { VideoTool, FrameCounter, parseInspect, parseProbe, decodersFor, choose, whyNot, streamPipeline, testPipeline, args, DECODERS, SINKS, LAUNCHER, SAMPLES };
+module.exports = { VideoTool, FrameCounter, StreamKeeper, parseInspect, parseProbe, decodersFor, choose, whyNot, streamPipeline, testPipeline, args,
+    viewFor, aspectOf, spsSize, ASPECTS, DECODERS, SINKS, LAUNCHER, SAMPLES };

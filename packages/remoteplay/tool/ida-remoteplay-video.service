@@ -1,5 +1,5 @@
 [Unit]
-Description=Remote Play Video: the console's stream on the car's screen through the head unit's hardware decoder, and a USB gamepad
+Description=Remote Play Video: a stream (Remote Play, AirPlay) on the car's screen through the head unit's hardware decoder, and a USB gamepad
 
 [Service]
 # Settings: /var/opt/ida-remoteplay-video/settings.json (decoder, sink, sinkProps; read at start and at each probe).

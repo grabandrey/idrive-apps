@@ -161,6 +161,9 @@ channel, and Remote Play sessions.
   `remoteplay.log`, in the first writable folder of the app's home, its working folder and the temp folder. The
   **Logs** screen shows the same lines, as does the head unit's log (`RMPL`).
 - Engine: its log is in the journal (`journalctl -u ida-remoteplay-engine`): pairing, the session, and why it ended.
+- Video tool: the stream header's `"aspect"` (`fit`, `stretch`, `16:9`, `4:3`, ... ) and `{"op":"view","aspect"}` set a
+  stream's shape (1.2.0; [AirPlay](../airplay/README.md#the-pictures-shape) uses them). Without it, the picture goes
+  in `rect` as before.
 - Video tool: `/var/opt/ida-remoteplay-video/settings.json` can name the decoder and display, for example
   `{"decoder":{"h264":"omxh264dec"},"sink":"kmssink","sinkProps":"fullscreen=true"}`. Its log is in the journal
   (`journalctl -u ida-remoteplay-video`): what it found, each decoder it tried and why it failed, each pipeline, and

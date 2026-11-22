@@ -1,0 +1,16 @@
+[Unit]
+Description=AirPlay Engine: an iPhone's or iPad's mirrored screen on the car's screen, built on UxPlay
+After=network.target
+
+[Service]
+ExecStart=/bin/sh /var/opt/ida-airplay-engine/current/start.sh
+# the car's system.conf has DefaultStandardOutput=null: the log would never reach the journal
+StandardOutput=journal
+# the app's socket: /run/ida-airplay-engine/engine.sock (0666, the app runs as its own uid)
+RuntimeDirectory=ida-airplay-engine
+RuntimeDirectoryMode=0755
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

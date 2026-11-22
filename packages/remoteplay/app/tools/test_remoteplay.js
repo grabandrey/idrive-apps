@@ -340,7 +340,7 @@ test('video tool: the launcher and the clips', () => {
     if (process.arch !== 'x64' || process.platform !== 'linux') return;
     const cp = require('child_process'), bin = path.join(TOOL, 'bin/x86_64/ida-gst');
     const probe = cp.spawnSync(bin, ['probe'], { encoding: 'utf8', timeout: 30000 });
-    if (!/^version /.test(probe.stdout || '')) return;            // no GStreamer on this machine
+    if (!/^version /.test(probe.stdout || '') || !/\belement\th264parse\t/.test(probe.stdout)) return;   // no GStreamer (or no H.264 parser) here
     ok(/\belement\tfilesrc\t/.test(probe.stdout), 'probe lists elements');
     const run = cp.spawnSync(bin, ['launch', 'filesrc', 'location=' + path.join(TOOL, 'samples/check.h264'), '!', 'h264parse', '!', 'fakesink'], { encoding: 'utf8', timeout: 30000 });
     ok(run.status === 0 && /Got EOS/.test(run.stdout), 'a clip plays to the end: exit 0');
@@ -358,6 +358,89 @@ test('video tool: pictures counted in a stream, across chunks', () => {
     const h265 = new video.FrameCounter('h265');
     h265.push(Buffer.from([0, 0, 1, 0x40, 0x01, 0x0c, 0, 0, 1, 0x26, 0x01, 0xaf, 0, 0, 1, 0x02, 0x01, 0xd0, 0, 0, 0, 0]));
     eq(h265.frames, 2, 'VPS skipped, IDR and TRAIL counted');
+});
+
+test('video tool: the picture\'s shape (fit, stretch, ratios)', () => {
+    const area = { x: 0, y: 76, w: 2580, h: 764 };
+    const portrait = { width: 886, height: 1920 }, wide = { width: 1920, height: 886 };
+    eq(video.viewFor(area, portrait, 'fit'), { rect: { x: 1114, y: 76, w: 353, h: 764 }, par: null, ratio: 'fit' }, 'fit: its own shape, as tall as the area');
+    eq(video.viewFor(area, wide, 'fit').rect, { x: 462, y: 76, w: 1656, h: 764 });
+    const st = video.viewFor(area, wide, 'stretch');
+    eq(st.rect, area, 'stretch: all of the area');
+    ok(Math.abs(st.par[0] / st.par[1] * 1920 / 886 - 2580 / 764) < 1e-9, 'stretch: the pixels widened to fill it');
+    const r43 = video.viewFor(area, wide, '4:3');
+    eq(r43.rect, { x: 781, y: 76, w: 1019, h: 764 }, '4:3: centred, as tall as the area');
+    ok(Math.abs(r43.par[0] / r43.par[1] * 1920 / 886 - 1019 / 764) < 1e-9, '4:3: the picture made that shape');
+    eq(video.viewFor({ x: 0, y: 0, w: 1000, h: 1000 }, wide, '16:9').rect, { x: 0, y: 219, w: 1000, h: 563 }, 'a tall area: as wide as it');
+    eq(video.viewFor(area, { width: 1280, height: 720 }, '16:9').par, null, 'already that shape: left alone');
+    eq(video.ASPECTS, ['fit', 'stretch', '16:9', '16:10', '4:3', '21:9', '1:1']);
+    eq([video.aspectOf('4/3'), video.aspectOf(' Stretch '), video.aspectOf('nope'), video.aspectOf(undefined)], ['4:3', 'stretch', null, null]);
+    const c = video.choose(video.parseProbe('version 1.20.3\nelement\tv4l2h264dec\t256\tCodec/Decoder/Video/Hardware\nelement\twaylandsink\t0\tSink/Video\nelement\tcapssetter\t0\tGeneric\n').elements, {});
+    eq(video.streamPipeline(c, 'h264', r43.rect, [3, 4]), 'fdsrc fd=0 ! h264parse ! capssetter caps=video/x-h264,pixel-aspect-ratio=3/4 ! v4l2h264dec ! waylandsink render-rectangle=<781,76,1019,764> sync=false');
+    eq(video.streamPipeline(Object.assign({}, c, { capssetter: false }), 'h264', r43.rect, [3, 4]), 'fdsrc fd=0 ! h264parse ! v4l2h264dec ! waylandsink render-rectangle=<781,76,1019,764> sync=false', 'no capssetter: the rectangle alone');
+});
+test('video tool: the stream kept from its last keyframe, its size from the SPS', () => {
+    const clip = fs.readFileSync(path.join(TOOL, 'samples/test720p60.h264'));
+    const k = new video.StreamKeeper('h264'), sizes = [];
+    for (let i = 0; i < clip.length; i += 3000) { const ev = k.push(clip.slice(i, i + 3000)); if (ev.size) sizes.push(ev.size); }
+    eq(sizes, [{ width: 1280, height: 720 }], 'the size, once');
+    const r = k.replay();
+    ok(r.length < clip.length / 2 && r.length > 1000, 'from the last keyframe only (' + r.length + ' of ' + clip.length + ' bytes)');
+    eq([r[4] & 31, r.indexOf(Buffer.from([0, 0, 1, 0x68])) > 0], [7, true], 'it starts with the SPS, then the PPS');
+    eq(clip.slice(clip.length - 50).equals(r.slice(r.length - 50)), true, 'and ends where the stream is');
+    eq(video.spsSize(fs.readFileSync(path.join(TOOL, 'samples/check.h264')).slice(4)), { width: 640, height: 360 });
+    const small = new video.StreamKeeper('h264', { maxBytes: 2000 });
+    small.push(clip);
+    eq(small.replay().slice(0, 4).readUInt32BE(0) <= 1, true, 'past its limit: from the SPS/PPS');
+});
+test('video tool: a new shape while the stream plays (again from the keyframe)', () => {
+    const cp = require('child_process'), net = require('net');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpv-'));
+    const fake = path.join(dir, 'ida-gst');
+    fs.writeFileSync(fake, '#!/bin/sh\nif [ "$1" = probe ]; then printf "version 1.20.3\\nelement\\tv4l2h264dec\\t256\\tCodec/Decoder/Video/Hardware\\n' +
+        'element\\twaylandsink\\t0\\tSink/Video\\nelement\\tcapssetter\\t0\\tGeneric\\n"; exit 0; fi\n' +
+        'case "$*" in *fdsrc*) ;; *) exit 0 ;; esac\nshift\nN=$$\necho "$*" > "' + dir + '/launch.$N"\necho "Setting pipeline to PLAYING"\nexec cat > "' + dir + '/in.$N"\n');
+    fs.chmodSync(fake, 0o755);
+    const tool = cp.spawn(process.execPath, [path.join(TOOL, 'video.js')], { env: Object.assign({}, process.env, { RPV_RUN: dir, RPV_DATA: dir, RPV_LAUNCHER: fake }), stdio: 'ignore' });
+    const clip = fs.readFileSync(path.join(TOOL, 'samples/test720p60.h264'));
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = (f, what) => { const t0 = Date.now(); const go = () => (f() ? Promise.resolve() : Date.now() - t0 > 8000 ? Promise.reject(new Error('no ' + what)) : wait(50).then(go)); return go(); };
+    const launches = () => fs.readdirSync(dir).filter((f) => /^launch\./.test(f)).map((f) => ({ pid: f.slice(7), mtime: fs.statSync(path.join(dir, f)).mtimeMs })).sort((a, b) => a.mtime - b.mtime);
+    let ctl, stream, events = '';
+    const ask = (m) => new Promise((resolve) => { const before = events.length; ctl.write(JSON.stringify(m) + '\n'); until(() => events.slice(before).indexOf('"id":' + m.id) >= 0, 'reply').then(resolve); });
+    return until(() => fs.existsSync(path.join(dir, 'ctl.sock')) && fs.existsSync(path.join(dir, 'stream.sock')), 'sockets')
+        .then(() => new Promise((r) => { ctl = net.createConnection(path.join(dir, 'ctl.sock'), r); ctl.on('data', (d) => { events += d; }); }))
+        .then(() => ask({ id: 1, op: 'probe' }))
+        .then(() => new Promise((r) => { stream = net.createConnection(path.join(dir, 'stream.sock'), r); }))
+        .then(() => {
+            stream.write(JSON.stringify({ codec: 'h264', width: 1280, height: 720, fps: 60, rect: { x: 0, y: 76, w: 2580, h: 764 }, aspect: 'fit' }) + '\n');
+            stream.write(clip.slice(0, 600000));
+            return until(() => launches().length === 1, 'first pipeline');
+        })
+        .then(() => wait(300))
+        .then(() => {
+            const first = launches()[0];
+            ok(/render-rectangle=<611,76,1358,764>/.test(fs.readFileSync(path.join(dir, 'launch.' + first.pid), 'utf8')) && !/capssetter/.test(fs.readFileSync(path.join(dir, 'launch.' + first.pid), 'utf8')), 'fit: 16:9 in the middle, no capssetter');
+            return ask({ id: 2, op: 'view', aspect: 'stretch' });
+        })
+        .then(() => until(() => launches().length === 2, 'second pipeline'))
+        .then(() => { stream.write(clip.slice(600000)); return wait(500); })
+        .then(() => {
+            const second = launches()[1];
+            const pl = fs.readFileSync(path.join(dir, 'launch.' + second.pid), 'utf8');
+            ok(/capssetter caps=video\/x-h264,pixel-aspect-ratio=\d+\/\d+ /.test(pl) && /render-rectangle=<0,76,2580,764>/.test(pl), 'stretch: all of it, the pixels widened');
+            const got = fs.readFileSync(path.join(dir, 'in.' + second.pid));
+            eq(got[4] & 31, 7, 'the new pipeline starts at the SPS');
+            ok(clip.slice(clip.length - 100).equals(got.slice(got.length - 100)), 'and has the rest of the stream');
+            ok(/"state":"view","aspect":"stretch"/.test(events) && !/"what":"stream","state":"stopped"/.test(events), 'the app hears the new view, not an end');
+            return ask({ id: 3, op: 'view', aspect: 'nope' });
+        })
+        .then(() => {
+            ok(/"id":3,"ok":false,"error":"unknown aspect nope"/.test(events), 'an unknown aspect is refused');
+            stream.end();
+            return until(() => /"what":"stream","state":"stopped"/.test(events), 'the end');
+        })
+        .then(() => { ctl.destroy(); tool.kill(); }, (e) => { tool.kill(); throw e; });
 });
 
 /* ---- the gamepad ---- */

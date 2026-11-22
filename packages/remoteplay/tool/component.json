@@ -1,9 +1,9 @@
 {
   "id": "ida-remoteplay-video",
   "kind": "tool",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "title": "Remote Play Video",
-  "description": "The video and gamepad half of Remote Play: shows the console's stream on the car's screen at its full frame rate through the head unit's own hardware decoder (GStreamer), and reads a USB gamepad plugged into the car. Used by the Remote Play app. EXPERIMENTAL, untested on a car.",
+  "description": "The video and gamepad half of Remote Play, also used by AirPlay: shows a stream (the console's game, a phone's mirrored screen) on the car's screen at its full frame rate through the head unit's own hardware decoder (GStreamer), in the shape the app asks for (fit, stretch, 16:9, 4:3, ...), and reads a USB gamepad plugged into the car. EXPERIMENTAL, untested on a car.",
   "optional": true,
   "uninstallable": true,
   "mguHmi": ["ID8"],
