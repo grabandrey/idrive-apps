@@ -406,11 +406,11 @@ class AirPlayApp extends OnlineApp {
         }, (err) => { wf.note = 'Wi-Fi: ' + err.message; wf.warn = true; }).then(() => { wf.asking = false; this._dirty = true; });
     }
 
-    /* the interface that can join a network: the one that isn't the car's access point (else the first) */
+    /* the interface that can join a network: only one the Wi-Fi tool calls joinable (a plain client), never the car's
+     * own Wi-Fi; none: Scan, Connect and Disconnect are off */
     _clientIface() {
-        const st = this._wifi.status;
-        if (!st || !st.ifaces.length) return null;
-        return (st.ifaces.filter((i) => i.kind === 'station')[0] || st.ifaces.filter((i) => i.kind !== 'ap')[0] || st.ifaces[0]).name;
+        const st = this._wifi.status, i = st && st.ifaces.filter((x) => x.joinable)[0];
+        return i ? i.name : null;
     }
 
     _wifiPress(name) {
@@ -431,6 +431,7 @@ class AirPlayApp extends OnlineApp {
         else if (name === 'apWScan') this._wifiScan();
         else if (name === 'apWDisc') {
             const iface = this._clientIface();
+            if (!iface) return;
             wf.note = 'Disconnecting ' + iface + '...'; wf.warn = false;
             this._wifiLink.ask({ op: 'disconnect', iface: iface }, 15000).then(() => { wf.note = iface + ' disconnected.'; logger.info('Wi-Fi: ' + iface + ' disconnected'); },
                 (err) => { wf.note = 'Disconnect: ' + err.message; wf.warn = true; }).then(() => { this._wifiStatus(); this._dirty = true; });
@@ -445,7 +446,8 @@ class AirPlayApp extends OnlineApp {
 
     _wifiScan() {
         const wf = this._wifi, iface = this._clientIface();
-        if (!iface || wf.scanning) return;
+        if (!iface) { wf.note = 'No Wi-Fi client here to scan with: the car\'s own Wi-Fi is left alone.'; wf.warn = true; return; }
+        if (wf.scanning) return;
         wf.tab = 'networks'; wf.scanning = true; wf.iface = iface; wf.note = null; wf.warn = false;
         this._wifiLink.ask({ op: 'scan', iface: iface }, 30000).then((r) => {
             wf.networks = r.networks || [];

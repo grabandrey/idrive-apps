@@ -80,7 +80,7 @@
       "build": "unit",
       "title": "AirPlay",
       "description": "An iPhone's or iPad's screen on the car's screen while parked (AirPlay screen mirroring): the car is an AirPlay receiver on its Wi-Fi, a PIN on the car's screen the first time, the picture through the head unit's hardware decoder, in the shape you pick: Fit, Stretch, 16:9, 16:10, 4:3, 21:9 or 1:1 (decoded by the engine and drawn by the app on head units without GStreamer). A Wi-Fi screen: the car's access point and the devices on it, scan, connect. No sound. EXPERIMENTAL, untested on a car.",
-      "requires": { "ida-remoteplay-video": "1.3.0", "ida-airplay-engine": "1.2.0", "ida-airplay-wifi": "1.0.0" },
+      "requires": { "ida-remoteplay-video": "1.3.0", "ida-airplay-engine": "1.2.0", "ida-airplay-wifi": "1.1.0" },
       "uninstallable": true,
       "mguHmi": ["ID8"]
     },

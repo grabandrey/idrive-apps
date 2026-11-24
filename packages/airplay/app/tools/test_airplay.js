@@ -317,11 +317,14 @@ test('screens: no GStreamer: the picture drawn here, in the shape asked; Wi-Fi; 
     eq(ui.shapeRect(ui.VIDEO, { w: 1024, h: 472 }, 'stretch'), ui.VIDEO);
     eq(ui.shapeRect({ x: 0, y: 0, w: 1000, h: 500 }, { w: 100, h: 100 }, 'fit'), { x: 250, y: 0, w: 500, h: 500 });
     const st = { ifaces: [{ name: 'wlan0', kind: 'ap', ssid: 'MyBMW', up: 'up', state: 'ENABLED', v4: ['192.168.43.1'], v6: [], mac: 'm', clients: [{ mac: 'a', ip: '192.168.43.20', name: 'iPhone' }] },
-        { name: 'wlan1', kind: 'station', ssid: 'Home', state: 'COMPLETED', up: 'up', v4: ['192.168.1.5'], v6: [], mac: 'n', clients: [] }], others: [] };
+        { name: 'wlan1', kind: 'station', ssid: 'Home', state: 'COMPLETED', up: 'up', v4: ['192.168.1.5'], v6: [], mac: 'n', clients: [], joinable: true }], others: [] };
     eq(ui.wifiSummary(st), 'wlan0: access point "MyBMW" (1 device)  ·  wlan1: connected "Home" 192.168.1.5');
     ok(ui.wifiLines(st).some((l) => /iPhone\s+192\.168\.43\.20/.test(l.text)), 'the devices on the car\'s access point');
     const wk = keys({ view: 'wifi', wifi: { tool: true, status: st, tab: 'status' } });
     ['apWStatus', 'apWScan', 'apWDisc', 'apClose'].forEach((k) => ok(wk.indexOf(k) >= 0, 'Wi-Fi: ' + k));
+    const apOnly = { ifaces: [st.ifaces[0], Object.assign({}, st.ifaces[1], { joinable: false, why: 'shares its radio' })], others: [] };
+    const off = keys({ view: 'wifi', wifi: { tool: true, status: apOnly, tab: 'status' } });
+    ok(off.indexOf('apWScan') < 0 && off.indexOf('apWDisc') < 0, 'no joinable client: no Scan, no Disconnect (the car\'s own Wi-Fi is left alone)');
     const nets = keys({ view: 'wifi', wifi: { tool: true, status: st, tab: 'networks', networks: [{ ssid: 'A', signal: -40, freq: 2412, secure: true }, { ssid: 'B', signal: -70, freq: 5180, secure: false }] } });
     ok(nets.indexOf('apWn_0') >= 0 && nets.indexOf('apWn_1') >= 0, 'the networks, to tap');
     ok(keys({ view: 'home', engine: {}, receiver: {}, wifi: { tool: true, status: st } }).indexOf('apWifi') >= 0, 'Home: Wi-Fi');
@@ -351,13 +354,18 @@ test('Wi-Fi tool: what wpa_supplicant, hostapd, iw and /proc say', () => {
         [{ ip: '192.168.43.20', mac: '11:22:33:44:55:66', dev: 'uap0' }], 'incomplete entries left out');
     eq(wifi.parseLeases('1700000000 11:22:33:44:55:66 192.168.43.20 Annas-iPhone 01:11\n1700000000 aa:aa:aa:aa:aa:aa 192.168.43.21 * *\n'), { '11:22:33:44:55:66': 'Annas-iPhone' });
     eq(wifi.parseWireless('Inter-| sta-|   Quality        |\n face | tus | link level noise |\n wlan1: 0000   54.  -56.  -256        0      0      0      0      0        0\n'), { wlan1: -56 });
+    const ap = { name: 'uap0', kind: 'ap', phy: 'phy0' }, sta = { name: 'wlan1', kind: 'station', phy: 'phy0' };
+    ok(/shares its radio with the car's Wi-Fi \(uap0\)/.test(wifi.notJoinable(sta, [ap, sta])), 'a client on the same radio as the car\'s Wi-Fi: left alone');
+    eq(wifi.notJoinable(Object.assign({}, sta, { phy: 'phy1' }), [ap, sta]), null, 'on its own radio: usable');
+    ok(/not known to be a Wi-Fi client/.test(wifi.notJoinable({ name: 'wlan2', kind: 'unknown' }, [])), 'not known: left alone');
     eq([wifi.hex('Café 1'), wifi.quoted('p"ss')], ['436166c3a92031', '"p"ss"'], 'the SSID in hex (any byte), the password quoted');
 });
 test('Wi-Fi tool: status, scan, connect, disconnect against a stand-in head unit', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-wifi-'));
     const sys = path.join(dir, 'sys'), proc = path.join(dir, 'proc'), socks = path.join(dir, 'run'), runDir = path.join(dir, 'tool');
-    [['uap0', 'aa:bb:cc:00:00:10'], ['wlan1', 'aa:bb:cc:00:00:11']].forEach(([n, mac]) => {
+    [['uap0', 'aa:bb:cc:00:00:10', 'phy0'], ['wlan1', 'aa:bb:cc:00:00:11', 'phy1'], ['wlan0', 'aa:bb:cc:00:00:12', 'phy2']].forEach(([n, mac, phy]) => {
         fs.mkdirSync(path.join(sys, n, 'wireless'), { recursive: true });
+        fs.symlinkSync('../../phys/' + phy, path.join(sys, n, 'phy80211'));
         fs.writeFileSync(path.join(sys, n, 'address'), mac + '\n'); fs.writeFileSync(path.join(sys, n, 'operstate'), 'up\n');
     });
     fs.mkdirSync(path.join(sys, 'eth0'), { recursive: true });
@@ -365,17 +373,18 @@ test('Wi-Fi tool: status, scan, connect, disconnect against a stand-in head unit
     fs.writeFileSync(path.join(proc, 'net/arp'), 'IP address HW type Flags HW address Mask Device\n192.168.43.20 0x1 0x2 11:22:33:44:55:66 * uap0\n');
     fs.mkdirSync(path.join(socks, 'hostapd'), { recursive: true }); fs.mkdirSync(path.join(socks, 'wpa_supplicant'), { recursive: true });
     // the control sockets only need to exist (the stand-in ida-wpactl answers); their names are the interfaces'
-    const servers = [path.join(socks, 'hostapd', 'uap0'), path.join(socks, 'wpa_supplicant', 'wlan1')].map((p) => net.createServer(() => {}).listen(p));
+    const servers = [path.join(socks, 'hostapd', 'uap0'), path.join(socks, 'wpa_supplicant', 'wlan1'), path.join(socks, 'wpa_supplicant', 'wlan0')].map((p) => net.createServer(() => {}).listen(p));
     const state = path.join(dir, 'state');
     fs.writeFileSync(state, 'DISCONNECTED');
     const fake = path.join(dir, 'ida-wpactl');
     fs.writeFileSync(fake, '#!/bin/sh\nPATH=/usr/bin:/bin\nS="' + state + '"\nsock="$1"; shift\necho "$*" >> "' + dir + '/log"\ncase "$sock:$1" in\n' +
         '*uap0:STATUS) printf "state=ENABLED\\nchannel=36\\nfreq=5180\\nssid[0]=MyBMW 1234\\nnum_sta_non_erp=0\\n" ;;\n' +
         '*uap0:ALL_STA) printf "11:22:33:44:55:66\\nsignal=-47\\n" ;;\n' +
+        '*wlan0:STATUS) printf "wpa_state=COMPLETED\\nmode=P2P GO\\nssid=DIRECT-CarPlay\\nfreq=5745\\n" ;;\n' +
         '*wlan1:STATUS) if [ "$(cat $S)" = COMPLETED ]; then printf "wpa_state=COMPLETED\\nssid=Home\\nmode=station\\nfreq=2437\\n"; else printf "wpa_state=DISCONNECTED\\n"; fi ;;\n' +
         '*wlan1:SCAN) echo OK ;;\n*wlan1:SCAN_RESULTS) printf "bssid / frequency / signal level / flags / ssid\\naa:bb:cc:dd:ee:01\\t2437\\t-50\\t[WPA2-PSK-CCMP][ESS]\\tHome\\n" ;;\n' +
         '*wlan1:ADD_NETWORK) echo 3 ;;\n*wlan1:SET_NETWORK) case "$*" in *\'"wrongpass"\'*) echo COMPLETED > /dev/null ;; esac; echo OK ;;\n' +
-        '*wlan1:SELECT_NETWORK) if grep -q "psk \\"right-password\\"" "' + dir + '/log"; then echo COMPLETED > $S; fi; echo OK ;;\n' +
+        '*wlan1:ENABLE_NETWORK) echo OK ;;\n*wlan1:REASSOCIATE) if grep -q "psk \\"right-password\\"" "' + dir + '/log"; then echo COMPLETED > $S; fi; echo OK ;;\n' +
         '*wlan1:REMOVE_NETWORK) echo OK ;;\n*wlan1:DISCONNECT) echo DISCONNECTED > $S; echo OK ;;\n*) echo FAIL ;;\nesac\n');
     fs.chmodSync(fake, 0o755);
     const tool = cp.spawn(process.execPath, [path.join(WIFI, 'wifi.js')], { stdio: 'ignore', env: Object.assign({}, process.env,
@@ -386,9 +395,18 @@ test('Wi-Fi tool: status, scan, connect, disconnect against a stand-in head unit
         .then(() => { l.connect(); return until(() => l.ready, 3000, 'connection'); })
         .then(() => l.ask({ op: 'status' }))
         .then((st) => {
-            eq(st.ifaces.map((i) => [i.name, i.kind, i.ssid]), [['uap0', 'ap', 'MyBMW 1234'], ['wlan1', 'station', null]], 'the car\'s access point and the client');
+            eq(st.ifaces.map((i) => [i.name, i.kind, i.ssid, i.joinable]), [['uap0', 'ap', 'MyBMW 1234', false], ['wlan0', 'ap', 'DIRECT-CarPlay', false], ['wlan1', 'station', null, true]],
+                'the car\'s access point, CarPlay\'s P2P group (not joinable), and the client');
+            const go = st.ifaces[1];
             eq(st.ifaces[0].clients, [{ mac: '11:22:33:44:55:66', signal: -47, ip: '192.168.43.20', name: null }], 'who is on it: hostapd and the ARP table');
             eq([st.ifaces[0].channel, st.ifaces[0].mac, st.ifaces[0].control], [36, 'aa:bb:cc:00:00:10', path.join(socks, 'hostapd', 'uap0')]);
+            ok(/car's own Wi-Fi \(P2P GO\)/.test(go.why), 'why: ' + go.why);
+            const refused = (op) => l.ask(Object.assign({ op: op, iface: 'wlan0', ssid: 'X', psk: 'password1' })).then(() => ok(false, op + ' on the car\'s Wi-Fi'), (e) => ok(/left alone/.test(e.message), op + ' on CarPlay\'s P2P group: refused'));
+            return refused('scan').then(() => refused('connect')).then(() => refused('disconnect')).then(() => refused('scan').then(() => l.ask({ op: 'scan', iface: 'uap0' })).then(() => ok(false), (e) => ok(/left alone/.test(e.message), 'scan on the car\'s access point: refused')));
+        })
+        .then(() => {
+            const lg = fs.readFileSync(path.join(dir, 'log'), 'utf8').split('\n');
+            eq(lg.filter((x) => x && !/^(STATUS|ALL_STA)$/.test(x)), [], 'nothing but STATUS and ALL_STA sent before a client is used');
             return l.ask({ op: 'scan', iface: 'wlan1' });
         })
         .then((r) => {
@@ -401,10 +419,15 @@ test('Wi-Fi tool: status, scan, connect, disconnect against a stand-in head unit
             return l.ask({ op: 'connect', iface: 'wlan1', ssid: 'Home', psk: 'short' }).then(() => ok(false), (e) => ok(/8 to 63/.test(e.message), 'a password too short is refused'));
         })
         .then(() => l.ask({ op: 'connect', iface: 'wlan1', ssid: 'Home', psk: 'right-password' }))
-        .then((r) => { eq([r.state, r.ssid], ['COMPLETED', 'Home'], 'connected'); return l.ask({ op: 'connect', iface: 'uap0', ssid: 'X', psk: '' }).then(() => ok(false), (e) => ok(/not a Wi-Fi client/.test(e.message), 'the car\'s access point can\'t join a network')); })
+        .then((r) => { eq([r.state, r.ssid], ['COMPLETED', 'Home'], 'connected'); return l.ask({ op: 'connect', iface: 'uap0', ssid: 'X', psk: '' }).then(() => ok(false), (e) => ok(/left alone/.test(e.message), 'the car\'s access point can\'t join a network')); })
         .then(() => l.ask({ op: 'disconnect', iface: 'wlan1' }))
         .then(() => l.ask({ op: 'status' }))
-        .then((st) => { eq(st.ifaces[1].state, 'DISCONNECTED', 'disconnected'); done(); }, (e) => { done(); throw e; });
+        .then((st) => {
+            eq(st.ifaces[2].state, 'DISCONNECTED', 'disconnected');
+            const lg = fs.readFileSync(path.join(dir, 'log'), 'utf8');
+            ok(!/SELECT_NETWORK|SAVE_CONFIG|DISABLE_NETWORK/.test(lg), 'never SELECT_NETWORK (it disables every other network), never saved');
+            done();
+        }, (e) => { done(); throw e; });
 });
 test('Wi-Fi tool: the component, ida-wpactl for both processors', () => {
     const comp = JSON.parse(fs.readFileSync(path.join(WIFI, 'component.json'), 'utf8'));

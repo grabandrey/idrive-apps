@@ -95,6 +95,13 @@ and the head unit's other networks. **Scan networks** lists the networks around 
 type its password on the keyboard (letters, **#+=** for symbols), and **Connect** joins it: for example the car on your
 phone's hotspot. **Disconnect** leaves it. Connecting can drop wireless CarPlay for a while.
 
+**The car's own Wi-Fi is never touched.** Scan, Connect and Disconnect act only on a separate Wi-Fi client interface.
+They never act on an access point, a P2P group (wireless CarPlay runs the car's Wi-Fi as one), a `p2p-*` interface, or
+a client that shares its radio with the car's Wi-Fi. When the head unit has no such client, those buttons are off and
+the screen says why: you still see the status. Connect adds the network and enables it without disabling any other,
+and nothing is saved to the Wi-Fi's configuration. (AirPlay Wi-Fi 1.0.0 could take the car's P2P group for a client:
+a Connect or Disconnect there switched the car's Wi-Fi off until the head unit restarted. 1.1.0 can't.)
+
 The tool works through the head unit's own wpa_supplicant (a client) and hostapd (an access point), with their control
 sockets, and `iw` when it's there. When the head unit's Wi-Fi is managed some other way, the screen still shows the
 interfaces and their addresses, and says what it can't do.

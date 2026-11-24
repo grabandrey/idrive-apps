@@ -1,7 +1,7 @@
 {
   "id": "ida-airplay-wifi",
   "kind": "tool",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "AirPlay Wi-Fi",
   "description": "The Wi-Fi half of the AirPlay app: shows what the head unit's Wi-Fi is doing (the car's access point and the devices on it, or the network the car is on) and connects the car to a network when you ask, through the head unit's own wpa_supplicant and hostapd. EXPERIMENTAL, untested on a car.",
   "optional": true,

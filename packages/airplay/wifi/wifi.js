@@ -16,6 +16,13 @@
  *   {"op":"connect","iface","ssid","psk"}    -> {"ok":true,"state":"COMPLETED","ip":"192.168.1.20"}
  *   {"op":"disconnect","iface"}              -> {"ok":true}
  *
+ * Never the car's own Wi-Fi: scan, connect and disconnect act only on an interface that is plainly a client (iw says
+ * "managed", or wpa_supplicant says mode=station, or it's a disconnected client), never on an access point, a P2P group
+ * (wireless CarPlay runs the car's Wi-Fi as a P2P group owner through wpa_supplicant), a p2p-* interface, or a client
+ * that shares its radio with one of those (joining a network would move the car's Wi-Fi off its channel). Connect
+ * adds a network and enables it (no SELECT_NETWORK: that would disable every other network, the car's included), and
+ * nothing is ever saved to wpa_supplicant's configuration.
+ *
  * Node 8 compatible (the head unit's /usr/bin/node).
  */
 const fs = require('fs');
@@ -24,7 +31,7 @@ const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const RUN = process.env.APW_RUN || '/run/ida-airplay-wifi';
 const CTL = path.join(RUN, 'ctl.sock');
 const SYS = process.env.APW_SYS || '/sys/class/net';
@@ -149,6 +156,18 @@ function parseWireless(text) {
 function hex(s) { return Buffer.from(String(s), 'utf8').toString('hex'); }
 function quoted(s) { return '"' + String(s) + '"'; }
 
+/* an access point or a P2P group (wpa's mode=, iw's type): the car's own Wi-Fi, never to be touched */
+function serving(mode) { return !!mode && /^(AP|P2P[ -]?GO|P2P[ -]?group[ -]?formation|P2P-device|mesh|IBSS|P2P-client)$/i.test(String(mode).trim()) || /P2P|AP\b|mesh/i.test(String(mode || '')); }
+function phyOf(name) { try { return path.basename(fs.readlinkSync(path.join(SYS, name, 'phy80211'))); } catch (e) { return null; } }
+/* why an interface can't be used to join a network (null: it can) */
+function notJoinable(i, all) {
+    if (i.kind === 'ap') return 'it\'s the car\'s own Wi-Fi (' + (i.mode || i.iwType || 'access point') + '): left alone';
+    if (i.kind !== 'station') return 'not known to be a Wi-Fi client: left alone';
+    const shared = i.phy && all.filter((o) => o !== i && o.kind === 'ap' && o.phy === i.phy)[0];
+    if (shared) return 'shares its radio with the car\'s Wi-Fi (' + shared.name + '): joining a network would move the car\'s Wi-Fi off its channel, so it\'s left alone';
+    return null;
+}
+
 /* ---- the tool ---- */
 class Wifi {
     constructor() {
@@ -205,6 +224,12 @@ class Wifi {
         const names = LEASES.map(read).filter(Boolean).reduce((o, t) => Object.assign(o, parseLeases(t)), {});
         const quality = parseWireless(read(path.join(PROC, 'net/wireless')));
         return Promise.all(ifaces.map((name) => this._one(name, arp, names, quality))).then((list) => {
+            list.forEach((i) => {
+                const why = notJoinable(i, list);
+                i.joinable = !why;
+                i.why = why;
+            });
+            this.last = list;
             const others = Object.keys(os.networkInterfaces()).filter((n) => ifaces.indexOf(n) < 0 && n !== 'lo')
                 .map((n) => Object.assign({ name: n }, this.addresses(n))).filter((o) => o.v4.length || o.v6.length);
             return { version: VERSION, ifaces: list, others: others, tools: Object.keys(this.tools).filter((k) => this.tools[k]) };
@@ -219,10 +244,19 @@ class Wifi {
         const ctl = sock ? this.ctl(sock, ['STATUS']).then(kv) : Promise.resolve({});
         return Promise.all([iw, ctl]).then((r) => {
             const info = r[0], st = r[1];
-            if (st.wpa_state) { this.kinds[sock] = 'wpa'; o.kind = st.mode === 'AP' ? 'ap' : 'station'; o.state = st.wpa_state; o.ssid = st.ssid || null; o.freq = +st.freq || null; }
+            if (st.wpa_state) {
+                this.kinds[sock] = 'wpa';
+                o.kind = serving(st.mode) ? 'ap' : st.mode === 'station' ? 'station' : 'unknown';
+                o.mode = st.mode || null; o.state = st.wpa_state; o.ssid = st.ssid || null; o.freq = +st.freq || null;
+            }
             else if (st.state && (st['ssid[0]'] || st.bss || st.num_sta_non_erp !== undefined)) { this.kinds[sock] = 'hostapd'; o.kind = 'ap'; o.state = st.state; o.ssid = st['ssid[0]'] || null; o.freq = +st.freq || null; o.channel = +st.channel || null; }
-            if (info.type === 'AP') o.kind = 'ap';
+            if (serving(info.type)) o.kind = 'ap';
             else if (info.type === 'managed' && o.kind === 'unknown') o.kind = 'station';
+            // a wpa_supplicant interface, disconnected (no mode said), not named like a P2P or AP one: a client
+            else if (o.kind === 'unknown' && st.wpa_state && st.wpa_state !== 'COMPLETED' && !/^(p2p|uap|ap|softap|wlan-?ap)/i.test(name)) o.kind = 'station';
+            if (/^p2p/i.test(name)) o.kind = 'ap';
+            o.iwType = info.type || null;
+            o.phy = phyOf(name);
             o.ssid = o.ssid || info.ssid || null; o.freq = o.freq || info.freq || null; o.channel = o.channel || info.channel || null;
             if (o.kind !== 'ap') return o;
             // who's on it: hostapd's list, else iw's, else the ARP table for this interface
@@ -238,8 +272,18 @@ class Wifi {
         });
     }
 
-    scan(name) {
-        const sock = this.sockets[name] || this.findSockets(this.wireless())[name];
+    /* scan, connect and disconnect: only on a plain client, never the car's own Wi-Fi (the status is asked again) */
+    _guard(name) {
+        return this.status().then((st) => {
+            const i = st.ifaces.filter((x) => x.name === name)[0];
+            if (!i) throw new Error('no Wi-Fi interface ' + name);
+            if (!i.joinable) throw new Error(name + ': ' + i.why);
+            return this.sockets[name] || null;
+        });
+    }
+
+    scan(name) { return this._guard(name).then((sock) => this._scan(name, sock)); }
+    _scan(name, sock) {
         if (sock && this.kinds[sock] !== 'hostapd') {
             return this.ctl(sock, ['SCAN']).then(() => new Promise((r) => setTimeout(r, 4500)))
                 .then(() => this.ctl(sock, ['SCAN_RESULTS'])).then((t) => {
@@ -257,17 +301,24 @@ class Wifi {
     /* the car on another network: a new network in wpa_supplicant, selected, then an address (the system's DHCP, or
      * udhcpc / dhclient / dhcpcd when none comes) */
     connect(name, ssid, psk) {
-        const sock = this.sockets[name] || this.findSockets(this.wireless())[name];
-        if (!sock || this.kinds[sock] === 'hostapd') return Promise.reject(new Error(name + ' is not a Wi-Fi client here (no wpa_supplicant for it)'));
         if (!ssid) return Promise.reject(new Error('no network name'));
         if (psk && (psk.length < 8 || psk.length > 63)) return Promise.reject(new Error('a Wi-Fi password has 8 to 63 characters'));
+        return this._guard(name).then((sock) => {
+            if (!sock || this.kinds[sock] !== 'wpa') throw new Error(name + ' is not a Wi-Fi client here (no wpa_supplicant for it)');
+            return this._connect(name, sock, ssid, psk);
+        });
+    }
+    _connect(name, sock, ssid, psk) {
         let id;
         const c = (cmd) => this.ctl(sock, cmd).then((t) => { if (t === null || /^FAIL/.test(t)) throw new Error(cmd[0] + ' refused'); return t.trim(); });
         log('info', 'connecting ' + name + ' to "' + ssid + '"');
         return c(['ADD_NETWORK']).then((t) => { id = t; })
             .then(() => c(['SET_NETWORK', id, 'ssid', hex(ssid)]))
             .then(() => (psk ? c(['SET_NETWORK', id, 'psk', quoted(psk)]) : c(['SET_NETWORK', id, 'key_mgmt', 'NONE'])))
-            .then(() => c(['SELECT_NETWORK', id]))
+            // enabled, first in line, and the client asked to look again: the other networks stay as they were
+            .then(() => c(['SET_NETWORK', id, 'priority', '1000']))
+            .then(() => c(['ENABLE_NETWORK', id]))
+            .then(() => c(['REASSOCIATE']))
             .then(() => this._wait(sock, 25000))
             .then((st) => {
                 if (st.wpa_state !== 'COMPLETED') throw new Error('not connected (' + (st.wpa_state || 'no answer') + '): check the password');
@@ -298,9 +349,10 @@ class Wifi {
     }
 
     disconnect(name) {
-        const sock = this.sockets[name] || this.findSockets(this.wireless())[name];
-        if (!sock || this.kinds[sock] === 'hostapd') return Promise.reject(new Error(name + ' is not a Wi-Fi client here'));
-        return this.ctl(sock, ['DISCONNECT']).then(() => ({}));
+        return this._guard(name).then((sock) => {
+            if (!sock || this.kinds[sock] !== 'wpa') throw new Error(name + ' is not a Wi-Fi client here');
+            return this.ctl(sock, ['DISCONNECT']).then(() => ({}));
+        });
     }
 
     handle(m) {
@@ -345,4 +397,4 @@ if (require.main === module) {
     new Wifi().start();
 }
 
-module.exports = { Wifi, kv, parseScan, parseIwScan, parseAllSta, parseStationDump, parseIwInfo, parseArp, parseLeases, parseWireless, hex, quoted, unescapeSsid };
+module.exports = { Wifi, serving, notJoinable, kv, parseScan, parseIwScan, parseAllSta, parseStationDump, parseIwInfo, parseArp, parseLeases, parseWireless, hex, quoted, unescapeSsid };

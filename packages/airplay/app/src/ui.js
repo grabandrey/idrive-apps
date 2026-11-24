@@ -311,7 +311,7 @@ function logs(rec, m, targets) {
 }
 
 /* ---- Wi-Fi ---- */
-function kindLabel(i) { return i.kind === 'ap' ? 'access point' : i.kind === 'station' ? (i.state === 'COMPLETED' || i.ssid ? 'connected' : 'not connected') : 'Wi-Fi'; }
+function kindLabel(i) { return i.kind === 'ap' ? (i.mode && /P2P/i.test(i.mode) ? 'the car\'s Wi-Fi (P2P group, CarPlay)' : 'access point') : i.kind === 'station' ? (i.state === 'COMPLETED' || i.ssid ? 'connected' : 'not connected') : 'Wi-Fi'; }
 function wifiSummary(st) {
     if (!st) return 'Looking...';
     if (!st.ifaces.length) return 'No Wi-Fi interface found';
@@ -363,12 +363,14 @@ function wifi(rec, m, targets) {
         });
     }
     const bx = 2050, bw = W - 90 - bx, bh = 86, g = 18;
-    const st = wf.status, client = st && st.ifaces.filter((i) => i.kind !== 'ap')[0];
+    const st = wf.status, client = st && st.ifaces.filter((i) => i.joinable)[0];
     pill(rec, m, targets, 'apWStatus', 'Status', bx, 120, bw, bh, { fill: wf.tab !== 'networks' ? [33, 43, 64, 255] : null, disabled: !wf.tool });
-    pill(rec, m, targets, 'apWScan', wf.scanning ? 'Scanning...' : 'Scan networks', bx, 120 + (bh + g), bw, bh, { fill: wf.tab === 'networks' ? [33, 43, 64, 255] : null, disabled: !wf.tool || wf.scanning });
+    pill(rec, m, targets, 'apWScan', wf.scanning ? 'Scanning...' : 'Scan networks', bx, 120 + (bh + g), bw, bh, { fill: wf.tab === 'networks' ? [33, 43, 64, 255] : null, disabled: !wf.tool || wf.scanning || !client });
     pill(rec, m, targets, 'apWDisc', client && client.ssid ? 'Disconnect ' + fit(rec, 'body', client.ssid, bw - 240) : 'Disconnect', bx, 120 + 2 * (bh + g), bw, bh, { disabled: !(client && client.ssid) || !!wf.connecting });
     pill(rec, m, targets, 'apClose', 'Back', bx, 120 + 4 * (bh + g), bw, bh);
-    rec.text('small', fit(rec, 'small', 'Connecting may drop wireless CarPlay for a while.', bw), bx, 120 + 3 * (bh + g) + 50, C.faint);
+    const off = st && !client && st.ifaces.length ? st.ifaces.map((i) => i.name + ': ' + (i.why || 'left alone')).join('; ') : null;
+    rec.text('small', fit(rec, 'small', off ? 'Scan and Connect are off' : 'Only a Wi-Fi client is used: never the car\'s own Wi-Fi.', bw), bx, 120 + 3 * (bh + g) + 36, off ? C.orange : C.faint);
+    if (off) rec.text('small', fit(rec, 'small', off, bw), bx, 120 + 3 * (bh + g) + 72, C.faint);
 }
 
 /* the password keyboard: letters (Shift), digits, a page of symbols */

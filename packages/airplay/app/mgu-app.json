@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "id": "ida_airplay",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "tree": "package",
   "modules": [
     "src/ida_airplay.js",
